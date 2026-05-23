@@ -1,0 +1,7 @@
+.direnv
+.envrc
+*.md
+!README.md
+info.yaml
+library.yaml
+odyssey-tui
