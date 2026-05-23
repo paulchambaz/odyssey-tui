@@ -110,14 +110,14 @@ func runLoginWizard(store *Store, register bool) {
 	fmt.Println("logged in")
 }
 
-func runTUI(creds *Credentials) {
-	lib, err := loadLibrary("library.yaml")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
+func runTUI(store *Store) {
+	creds := store.LoadCredentials()
+	api := NewIliadApi(*creds)
 
-	ps := newPlayerState(lib)
+	ps := newPlayerState(&Library{})
+	ps.api = api
+	ps.store = store
+
 	p := tea.NewProgram(ps, tea.WithAltScreen())
 	ps.program = p
 
@@ -158,6 +158,6 @@ func main() {
 		if store.LoadCredentials() == nil {
 			runLoginWizard(store, false)
 		}
-		runTUI(store.LoadCredentials())
+		runTUI(store)
 	}
 }

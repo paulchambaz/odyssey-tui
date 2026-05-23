@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,6 +29,27 @@ type posQueryMsg struct {
 	err    error
 }
 
+type booksResultMsg struct {
+	books []Audiobook
+	err   error
+}
+
+type localBooksMsg struct {
+	books  []Audiobook
+	counts map[string]int
+	times  map[string]int64
+}
+
+type downloadProgressMsg struct {
+	hash string
+	pct  float64
+}
+
+type downloadDoneMsg struct {
+	hash string
+	err  error
+}
+
 type PlayerState struct {
 	mode       Mode
 	returnMode Mode
@@ -35,6 +57,10 @@ type PlayerState struct {
 	windowWidth  int
 	windowHeight int
 	program      *tea.Program
+
+	api            ApiClient
+	store          *Store
+	cancelDownloads map[string]context.CancelFunc
 
 	lib *Library
 
@@ -223,7 +249,14 @@ func (ps *PlayerState) playerInnerH() int {
 }
 
 func (ps *PlayerState) Init() tea.Cmd {
-	return ps.tickCmd()
+	cmds := []tea.Cmd{ps.tickCmd()}
+	if ps.api != nil {
+		cmds = append(cmds, fetchBooksCmd(ps.api))
+	}
+	if ps.store != nil {
+		cmds = append(cmds, loadLocalBooksCmd(ps.store))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (ps *PlayerState) tickCmd() tea.Cmd {
@@ -242,8 +275,86 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return ps, ps.tickCmd()
 	case tea.KeyMsg:
 		return ps.handleKey(msg)
+	case booksResultMsg:
+		if msg.err != nil {
+			ps.statusMsg = msg.err.Error()
+			ps.statusErr = true
+			return ps, nil
+		}
+		ps.lib.Books = msg.books
+		ps.statusErr = false
+		return ps, nil
+	case localBooksMsg:
+		for i := range ps.lib.Books {
+			for _, local := range msg.books {
+				if ps.lib.Books[i].Hash == local.Hash {
+					ps.lib.Books[i].State = local.State
+					ps.lib.Books[i].Chapters = local.Chapters
+				}
+			}
+		}
+		return ps, nil
+	case downloadProgressMsg:
+		for i := range ps.lib.Books {
+			if ps.lib.Books[i].Hash == msg.hash {
+				ps.lib.Books[i].DownloadProgress = msg.pct
+				break
+			}
+		}
+		return ps, nil
+	case downloadDoneMsg:
+		if ps.cancelDownloads != nil {
+			delete(ps.cancelDownloads, msg.hash)
+		}
+		for i := range ps.lib.Books {
+			if ps.lib.Books[i].Hash == msg.hash {
+				if msg.err != nil {
+					ps.lib.Books[i].State = DownloadRemote
+					ps.statusMsg = "download failed: " + msg.err.Error()
+					ps.statusErr = true
+				} else {
+					ps.lib.Books[i].State = DownloadReady
+				}
+				ps.lib.Books[i].DownloadProgress = 0
+				break
+			}
+		}
+		return ps, nil
 	}
 	return ps, nil
+}
+
+func startDownloadCmd(api ApiClient, store *Store, book *Audiobook, prog *tea.Program, ctx context.Context) tea.Cmd {
+	hash := book.Hash
+	return func() tea.Msg {
+		go func() {
+			// Phase 8 will implement: poll archiveReady, stream download, extract tarball.
+			select {
+			case <-ctx.Done():
+				prog.Send(downloadDoneMsg{hash: hash, err: context.Canceled})
+			default:
+				prog.Send(downloadDoneMsg{hash: hash, err: nil})
+			}
+		}()
+		return nil
+	}
+}
+
+func fetchBooksCmd(api ApiClient) tea.Cmd {
+	return func() tea.Msg {
+		books, err := api.GetAudiobooks()
+		return booksResultMsg{books: books, err: err}
+	}
+}
+
+func loadLocalBooksCmd(store *Store) tea.Cmd {
+	return func() tea.Msg {
+		books, counts, times, err := store.LoadLocalAudiobooks()
+		if err != nil {
+			return localBooksMsg{}
+		}
+		return localBooksMsg{books: books, counts: counts, times: times}
+	}
 }
 
 func clampOffset(offset, selected, panelH, padding, total int) int {

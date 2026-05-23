@@ -82,6 +82,8 @@ func pressKey(ps *PlayerState, key string) (*PlayerState, tea.Cmd) {
 		msg = tea.KeyMsg{Type: tea.KeyCtrlC}
 	case "esc":
 		msg = tea.KeyMsg{Type: tea.KeyEsc}
+	case "enter":
+		msg = tea.KeyMsg{Type: tea.KeyEnter}
 	case "up":
 		msg = tea.KeyMsg{Type: tea.KeyUp}
 	case "down":

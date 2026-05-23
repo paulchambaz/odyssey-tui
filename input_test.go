@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -361,47 +362,119 @@ func TestHandleHelp_OtherKey_NoChange(t *testing.T) {
 	}
 }
 
-//  handleMain — d toggle library
+//  handleMain — d download/cancel
 
-func TestHandleMain_D_ShowsLibrary(t *testing.T) {
-	ps := newPlayerState(makeLib("", nil))
-	ps.showLibrary = false
-	ps2, _ := pressKey(ps, "d")
-	if !ps2.showLibrary {
-		t.Error("showLibrary should be true after d")
+func TestHandleMain_D_Remote_StartsDownload(t *testing.T) {
+	book := makeBook("a", DownloadRemote, nil, nil)
+	mock := &MockApiClient{
+		GetAudiobooksFn: func() ([]Audiobook, error) { return nil, nil },
 	}
-	if !ps2.libActive {
-		t.Error("libActive should be true when library opens")
-	}
-	if ps2.onAlbum {
-		t.Error("onAlbum should be false when library opens")
-	}
-}
-
-func TestHandleMain_D_HidesLibrary(t *testing.T) {
-	ps := newPlayerState(makeLib("", nil))
-	ps.showLibrary = true
-	ps.libActive = false
-	ps.onAlbum = true
-	ps2, _ := pressKey(ps, "d")
-	if ps2.showLibrary {
-		t.Error("showLibrary should be false after d")
-	}
-}
-
-func TestHandleMain_D_HidesLibrary_WhenLibActive(t *testing.T) {
-	ps := newPlayerState(makeLib("", nil))
-	ps.showLibrary = true
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.api = mock
+	ps.store = newTestStore(t)
 	ps.libActive = true
-	ps2, _ := pressKey(ps, "d")
-	if ps2.showLibrary {
-		t.Error("showLibrary should be false after d")
+	ps.libSel = 0
+
+	ps2, cmd := pressKey(ps, "d")
+	if cmd == nil {
+		t.Error("d on DownloadRemote should return a non-nil download cmd")
 	}
-	if ps2.libActive {
-		t.Error("libActive should be false after hiding library")
+	if ps2.lib.Books[0].State != DownloadInProgress {
+		t.Errorf("state = %v, want DownloadInProgress", ps2.lib.Books[0].State)
 	}
-	if !ps2.onAlbum {
-		t.Error("onAlbum should be true after library closes from libActive")
+}
+
+func TestHandleMain_D_InProgress_Cancels(t *testing.T) {
+	book := makeBook("a", DownloadInProgress, nil, nil)
+	cancelled := false
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.cancelDownloads = map[string]context.CancelFunc{
+		"a": func() { cancelled = true },
+	}
+	ps.libActive = true
+	ps.libSel = 0
+
+	pressKey(ps, "d")
+	if !cancelled {
+		t.Error("d on DownloadInProgress should call the cancel func")
+	}
+}
+
+//  handleMain — p / enter play
+
+func TestHandleMain_P_Ready(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000, 2000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.libActive = true
+	ps.libSel = 0
+
+	ps2, _ := pressKey(ps, "p")
+	if ps2.mode != ModePlayer {
+		t.Errorf("mode = %v, want ModePlayer", ps2.mode)
+	}
+}
+
+func TestHandleMain_Enter_Ready(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000, 2000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.libActive = true
+	ps.libSel = 0
+
+	ps2, _ := pressKey(ps, "enter")
+	if ps2.mode != ModePlayer {
+		t.Errorf("mode = %v, want ModePlayer", ps2.mode)
+	}
+}
+
+func TestHandleMain_P_NotReady_Remote(t *testing.T) {
+	book := makeBook("a", DownloadRemote, nil, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.libActive = true
+	ps.libSel = 0
+
+	ps2, _ := pressKey(ps, "p")
+	if ps2.statusMsg == "" {
+		t.Error("p on remote book should set statusMsg")
+	}
+	if !ps2.statusErr {
+		t.Error("p on remote book should set statusErr")
+	}
+	if ps2.mode != ModeMain {
+		t.Errorf("mode = %v, want ModeMain (no play on non-ready)", ps2.mode)
+	}
+}
+
+func TestHandleMain_P_NotReady_Preparing(t *testing.T) {
+	book := makeBook("a", DownloadPreparing, nil, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.libActive = true
+	ps.libSel = 0
+
+	ps2, _ := pressKey(ps, "p")
+	if ps2.statusMsg == "" {
+		t.Error("p on preparing book should set statusMsg")
+	}
+	if !ps2.statusErr {
+		t.Error("p on preparing book should set statusErr")
+	}
+}
+
+//  handleMain — r refresh
+
+func TestHandleMain_R_FetchesBooks(t *testing.T) {
+	mock := &MockApiClient{
+		GetAudiobooksFn: func() ([]Audiobook, error) { return nil, nil },
+	}
+	ps := newPlayerState(makeLib("", nil))
+	ps.api = mock
+
+	_, cmd := pressKey(ps, "r")
+	if cmd == nil {
+		t.Error("r should return a non-nil cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(booksResultMsg); !ok {
+		t.Errorf("cmd() returned %T, want booksResultMsg", msg)
 	}
 }
 

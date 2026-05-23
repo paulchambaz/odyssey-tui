@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"math"
 	"testing"
 )
@@ -449,5 +450,118 @@ func TestMaxInfoOff_LongDescription(t *testing.T) {
 	}
 	if got := ps.maxInfoOff(&b, 10, 8); got != want {
 		t.Errorf("got %d, want %d", got, want)
+	}
+}
+
+//  fetchBooksCmd
+
+func TestFetchBooksCmd_Success(t *testing.T) {
+	b1 := makeBook("a", DownloadRemote, nil, nil)
+	b2 := makeBook("b", DownloadReady, nil, nil)
+	mock := &MockApiClient{
+		GetAudiobooksFn: func() ([]Audiobook, error) {
+			return []Audiobook{b1, b2}, nil
+		},
+	}
+	cmd := fetchBooksCmd(mock)
+	if cmd == nil {
+		t.Fatal("fetchBooksCmd returned nil")
+	}
+	msg := cmd()
+	result, ok := msg.(booksResultMsg)
+	if !ok {
+		t.Fatalf("msg type = %T, want booksResultMsg", msg)
+	}
+	if result.err != nil {
+		t.Errorf("err = %v, want nil", result.err)
+	}
+	if len(result.books) != 2 {
+		t.Errorf("len(books) = %d, want 2", len(result.books))
+	}
+}
+
+func TestFetchBooksCmd_Error(t *testing.T) {
+	mock := &MockApiClient{
+		GetAudiobooksFn: func() ([]Audiobook, error) {
+			return nil, errors.New("network error")
+		},
+	}
+	cmd := fetchBooksCmd(mock)
+	if cmd == nil {
+		t.Fatal("fetchBooksCmd returned nil")
+	}
+	msg := cmd()
+	result, ok := msg.(booksResultMsg)
+	if !ok {
+		t.Fatalf("msg type = %T, want booksResultMsg", msg)
+	}
+	if result.err == nil {
+		t.Error("err should be non-nil on API error")
+	}
+	if result.books != nil {
+		t.Error("books should be nil on error")
+	}
+}
+
+//  Update — booksResultMsg
+
+func TestUpdate_BooksResult_Success(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	b1 := makeBook("a", DownloadRemote, nil, nil)
+	b2 := makeBook("b", DownloadReady, nil, nil)
+	result, _ := ps.Update(booksResultMsg{books: []Audiobook{b1, b2}})
+	ps2 := result.(*PlayerState)
+	if len(ps2.lib.Books) != 2 {
+		t.Errorf("lib.Books len = %d, want 2", len(ps2.lib.Books))
+	}
+	if ps2.statusErr {
+		t.Error("statusErr should be false on success")
+	}
+}
+
+func TestUpdate_BooksResult_Error(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	result, _ := ps.Update(booksResultMsg{err: errors.New("timeout")})
+	ps2 := result.(*PlayerState)
+	if ps2.statusMsg == "" {
+		t.Error("statusMsg should be set on error")
+	}
+	if !ps2.statusErr {
+		t.Error("statusErr should be true on error")
+	}
+}
+
+//  loadLocalBooksCmd
+
+func TestLoadLocalBooksCmd_ReturnsLocalBooksMsg(t *testing.T) {
+	s := newTestStore(t)
+	cmd := loadLocalBooksCmd(s)
+	if cmd == nil {
+		t.Fatal("loadLocalBooksCmd returned nil cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(localBooksMsg); !ok {
+		t.Fatalf("msg type = %T, want localBooksMsg", msg)
+	}
+}
+
+//  Update — localBooksMsg
+
+func TestUpdate_LocalBooksMsg_SetsReadyState(t *testing.T) {
+	serverBook := makeBook("a", DownloadRemote, nil, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{serverBook}))
+
+	localBook := makeBook("a", DownloadReady, makeChapters(1000, 2000), nil)
+	result, _ := ps.Update(localBooksMsg{books: []Audiobook{localBook}})
+	ps2 := result.(*PlayerState)
+
+	if len(ps2.lib.Books) == 0 {
+		t.Fatal("lib.Books should not be empty")
+	}
+	if ps2.lib.Books[0].State != DownloadReady {
+		t.Errorf("book state = %v, want DownloadReady after local scan", ps2.lib.Books[0].State)
+	}
+	if len(ps2.lib.Books[0].Chapters) != 2 {
+		t.Errorf("chapters = %d, want 2 (merged from local scan)", len(ps2.lib.Books[0].Chapters))
 	}
 }

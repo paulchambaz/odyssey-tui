@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -35,14 +37,45 @@ func (ps *PlayerState) handleMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return ps, tea.Quit
 
 	case "d":
-		ps.showLibrary = !ps.showLibrary
-		if ps.showLibrary {
-			ps.libActive = true
-			ps.onAlbum = false
-			ps.libInfoOpen = true
-		} else if ps.libActive {
-			ps.libActive = false
-			ps.onAlbum = true
+		if ps.libActive && len(ps.lib.Books) > 0 {
+			b := &ps.lib.Books[ps.libSel]
+			switch b.State {
+			case DownloadInProgress:
+				if ps.cancelDownloads != nil {
+					if cancel, ok := ps.cancelDownloads[b.Hash]; ok {
+						cancel()
+						delete(ps.cancelDownloads, b.Hash)
+					}
+				}
+			case DownloadRemote:
+				ctx, cancel := context.WithCancel(context.Background())
+				if ps.cancelDownloads == nil {
+					ps.cancelDownloads = make(map[string]context.CancelFunc)
+				}
+				ps.cancelDownloads[b.Hash] = cancel
+				b.State = DownloadInProgress
+				return ps, startDownloadCmd(ps.api, ps.store, b, ps.program, ctx)
+			}
+		}
+
+	case "p", "enter":
+		var book *Audiobook
+		if ps.libActive && len(ps.lib.Books) > 0 {
+			book = &ps.lib.Books[ps.libSel]
+		} else if ps.onAlbum {
+			book = ps.selectedLocalBook()
+		}
+		if book == nil || book.State != DownloadReady {
+			ps.statusMsg = "not ready: download first"
+			ps.statusErr = true
+		} else {
+			ps.playerBook = book
+			ps.mode = ModePlayer
+		}
+
+	case "r":
+		if ps.api != nil {
+			return ps, fetchBooksCmd(ps.api)
 		}
 
 	case "h":

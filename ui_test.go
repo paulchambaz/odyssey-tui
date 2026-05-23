@@ -458,3 +458,118 @@ func TestBuildLibList_InProgressShowsPercentage(t *testing.T) {
 	}
 }
 
+//  renderLibraryPanel
+
+func splitPanel(out string) []string {
+	lines := strings.Split(out, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func TestRenderLibraryPanel_LineCount(t *testing.T) {
+	books := []Audiobook{
+		makeBook("a", DownloadRemote, nil, nil),
+		makeBook("b", DownloadReady, nil, nil),
+	}
+	ps := makeLibState(books)
+	ps.libInfoOpen = false
+	const w, h = 40, 10
+	lines := splitPanel(ps.renderLibraryPanel(w, h))
+	if len(lines) != h {
+		t.Errorf("line count = %d, want %d", len(lines), h)
+	}
+}
+
+func TestRenderLibraryPanel_LineWidths(t *testing.T) {
+	books := []Audiobook{makeBook("a", DownloadRemote, nil, nil)}
+	ps := makeLibState(books)
+	ps.libInfoOpen = false
+	const w, h = 40, 8
+	lines := splitPanel(ps.renderLibraryPanel(w, h))
+	for i, line := range lines {
+		if lipgloss.Width(line) != w {
+			t.Errorf("line[%d] width = %d, want %d", i, lipgloss.Width(line), w)
+		}
+	}
+}
+
+func TestRenderLibraryPanel_ShowsBookTitle(t *testing.T) {
+	book := makeBook("xyz", DownloadRemote, nil, nil)
+	book.Title = "Dune Special Edition"
+	ps := makeLibState([]Audiobook{book})
+	ps.libInfoOpen = false
+	out := stripANSI(ps.renderLibraryPanel(40, 10))
+	if !strings.Contains(out, "Dune Special Edition") {
+		t.Errorf("panel output should contain book title, got: %q", out)
+	}
+}
+
+func TestRenderLibraryPanel_InProgressShowsPercent(t *testing.T) {
+	book := makeBook("dl", DownloadInProgress, nil, nil)
+	book.DownloadProgress = 0.75
+	ps := makeLibState([]Audiobook{book})
+	ps.libInfoOpen = false
+	out := stripANSI(ps.renderLibraryPanel(40, 10))
+	if !strings.Contains(out, "75") {
+		t.Errorf("panel output should contain '75' for 75%% progress, got: %q", out)
+	}
+}
+
+//  renderAudiobooksPanel
+
+func TestRenderAudiobooksPanel_LineCount(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000, 2000), nil)
+	ps := makeLibState([]Audiobook{book})
+	ps.albumInfoOpen = false
+	const w, h = 40, 10
+	lines := splitPanel(ps.renderAudiobooksPanel(w, h))
+	if len(lines) != h {
+		t.Errorf("line count = %d, want %d", len(lines), h)
+	}
+}
+
+func TestRenderAudiobooksPanel_LineWidths(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	ps := makeLibState([]Audiobook{book})
+	ps.albumInfoOpen = false
+	const w, h = 40, 8
+	lines := splitPanel(ps.renderAudiobooksPanel(w, h))
+	for i, line := range lines {
+		if lipgloss.Width(line) != w {
+			t.Errorf("line[%d] width = %d, want %d", i, lipgloss.Width(line), w)
+		}
+	}
+}
+
+func TestRenderAudiobooksPanel_ShowsTitle(t *testing.T) {
+	book := makeBook("x", DownloadReady, makeChapters(1000), nil)
+	book.Title = "Foundation Series"
+	ps := makeLibState([]Audiobook{book})
+	ps.albumInfoOpen = false
+	out := stripANSI(ps.renderAudiobooksPanel(40, 10))
+	if !strings.Contains(out, "Foundation Series") {
+		t.Errorf("panel output should contain book title, got: %q", out)
+	}
+}
+
+//  renderMain
+
+func TestRenderMain_Width(t *testing.T) {
+	books := []Audiobook{makeBook("a", DownloadReady, makeChapters(1000), nil)}
+	ps := makeLibState(books)
+	ps.windowWidth = 80
+	ps.windowHeight = 24
+	out := ps.View()
+	lines := strings.Split(out, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for i, line := range lines {
+		if w := lipgloss.Width(line); w != 80 {
+			t.Errorf("line[%d] width = %d, want 80 (line=%q)", i, w, line)
+		}
+	}
+}
+
