@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -351,8 +355,9 @@ func parseInfoYml(path string) (Audiobook, error) {
 	chapters := make([]Chapter, len(info.Chapters))
 	var totalDur int64
 	for i, ch := range info.Chapters {
-		chapters[i] = Chapter{Title: ch.Title, Path: ch.Path, Duration: ch.Duration}
-		totalDur += ch.Duration
+		ms := ch.Duration * 1000
+		chapters[i] = Chapter{Title: ch.Title, Path: ch.Path, Duration: ms}
+		totalDur += ms
 	}
 	return Audiobook{
 		Title:       info.Title,
@@ -365,7 +370,158 @@ func parseInfoYml(path string) (Audiobook, error) {
 	}, nil
 }
 
-//  load local audiobooks 
+//  local books cache
+
+type cachedBook struct {
+	Hash        string    `json:"hash"`
+	Title       string    `json:"title"`
+	Author      string    `json:"author"`
+	Date        int       `json:"date"`
+	Description string    `json:"description"`
+	Genres      []string  `json:"genres"`
+	Duration    int64     `json:"duration"`
+	Size        int64     `json:"size"`
+	Chapters    []Chapter `json:"chapters"`
+}
+
+func (s *Store) localBooksCachePath() string {
+	return filepath.Join(s.dataDir, "books_cache.json")
+}
+
+func (s *Store) SaveLocalBooksCache(books []Audiobook, times map[string]int64) error {
+	cache := make([]cachedBook, len(books))
+	for i, b := range books {
+		cache[i] = cachedBook{
+			Hash:        b.Hash,
+			Title:       b.Title,
+			Author:      b.Author,
+			Date:        b.Date,
+			Description: b.Description,
+			Genres:      b.Genres,
+			Duration:    b.Duration,
+			Size:        b.Size,
+			Chapters:    b.Chapters,
+		}
+	}
+	return saveJSON(s.localBooksCachePath(), cache)
+}
+
+func (s *Store) LoadLocalBooksCache() ([]Audiobook, map[string]int64) {
+	var cache []cachedBook
+	if err := loadJSON(s.localBooksCachePath(), &cache); err != nil || len(cache) == 0 {
+		return nil, nil
+	}
+	books := make([]Audiobook, len(cache))
+	for i, c := range cache {
+		books[i] = Audiobook{
+			Hash:        c.Hash,
+			Title:       c.Title,
+			Author:      c.Author,
+			Date:        c.Date,
+			Description: c.Description,
+			Genres:      c.Genres,
+			Duration:    c.Duration,
+			Size:        c.Size,
+			Chapters:    c.Chapters,
+			State:       DownloadReady,
+		}
+	}
+	return books, nil
+}
+
+//  chapter duration probing
+
+// opusDurationMs returns the duration of an Ogg Opus file in milliseconds.
+// It reads the OpusHead packet for the pre-skip value and finds the last
+// granule position in the file without verifying Ogg CRC checksums.
+func opusDurationMs(path string) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	// Read the first 512 bytes to find OpusHead and extract pre-skip.
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(f, head)
+	head = head[:n]
+	idx := bytes.Index(head, []byte("OpusHead"))
+	if idx < 0 {
+		return 0, fmt.Errorf("opusDurationMs: OpusHead not found in %s", path)
+	}
+	if idx+12 > len(head) {
+		return 0, fmt.Errorf("opusDurationMs: OpusHead truncated in %s", path)
+	}
+	preSkip := int64(binary.LittleEndian.Uint16(head[idx+10 : idx+12]))
+
+	// Read the tail of the file and find the last Ogg page with a valid granule.
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	const tailSize = 65536
+	seekPos := info.Size() - tailSize
+	if seekPos < 0 {
+		seekPos = 0
+	}
+	if _, err := f.Seek(seekPos, io.SeekStart); err != nil {
+		return 0, err
+	}
+	tail := make([]byte, tailSize)
+	n, _ = io.ReadFull(f, tail)
+	tail = tail[:n]
+
+	// Scan backwards for "OggS", skipping pages with granule = -1 (no timestamp).
+	for i := len(tail) - 4; i >= 0; i-- {
+		if tail[i] != 'O' || tail[i+1] != 'g' || tail[i+2] != 'g' || tail[i+3] != 'S' {
+			continue
+		}
+		if i+14 > len(tail) {
+			continue
+		}
+		granule := int64(binary.LittleEndian.Uint64(tail[i+6 : i+14]))
+		if granule < 0 {
+			continue
+		}
+		samples := granule - preSkip
+		if samples < 0 {
+			samples = 0
+		}
+		return samples * 1000 / 48000, nil
+	}
+	return 0, fmt.Errorf("opusDurationMs: no valid Ogg page found in %s", path)
+}
+
+// probeChapterDurations returns durations in ms for each chapter by parsing
+// the audio files. Chapters that cannot be probed get duration 0.
+func probeChapterDurations(bookDir string, chapters []Chapter) []int64 {
+	durations := make([]int64, len(chapters))
+	for i, ch := range chapters {
+		d, err := opusDurationMs(filepath.Join(bookDir, ch.Path))
+		if err == nil {
+			durations[i] = d
+		}
+	}
+	return durations
+}
+
+func (s *Store) bookDurationsPath(hash string) string {
+	return filepath.Join(s.LibraryDir(hash), "durations.json")
+}
+
+func (s *Store) SaveBookDurations(hash string, durations []int64) error {
+	return saveJSON(s.bookDurationsPath(hash), durations)
+}
+
+func (s *Store) LoadBookDurations(hash string) []int64 {
+	var d []int64
+	if err := loadJSON(s.bookDurationsPath(hash), &d); err != nil {
+		return nil
+	}
+	return d
+}
+
+//  load local audiobooks
 
 func (s *Store) LoadLocalAudiobooks() ([]Audiobook, map[string]int, map[string]int64, error) {
 	base := s.LoadString("download_location", filepath.Join(s.dataDir, "library"))
@@ -396,6 +552,30 @@ func (s *Store) LoadLocalAudiobooks() ([]Audiobook, map[string]int, map[string]i
 		}
 		book.Hash = hash
 		book.State = DownloadReady
+
+		// Attach chapter durations: use cached file, or probe audio files once.
+		bookDir := filepath.Join(base, hash)
+		if saved := s.LoadBookDurations(hash); len(saved) == len(book.Chapters) {
+			var total int64
+			for i, d := range saved {
+				book.Chapters[i].Duration = d
+				total += d
+			}
+			book.Duration = total
+		} else {
+			probed := probeChapterDurations(bookDir, book.Chapters)
+			var total int64
+			for _, d := range probed {
+				total += d
+			}
+			if total > 0 {
+				for i, d := range probed {
+					book.Chapters[i].Duration = d
+				}
+				book.Duration = total
+				s.SaveBookDurations(hash, probed)
+			}
+		}
 
 		info, err := entry.Info()
 		if err == nil {

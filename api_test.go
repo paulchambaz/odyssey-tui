@@ -344,6 +344,25 @@ func TestGetAudiobooks_Success(t *testing.T) {
 	}
 }
 
+func TestGetAudiobooks_DurationConvertedToMs(t *testing.T) {
+	// Server sends duration in seconds; GetAudiobooks must convert to ms.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[{"hash":"h1","title":"Book","duration":60000}]`))
+	}))
+	defer srv.Close()
+
+	api := NewIliadApi(Credentials{BaseURL: srv.URL, Token: "tok"})
+	got, err := api.GetAudiobooks()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 60000 seconds = 16h40m; internally should be 60000000 ms
+	if got[0].Duration != 60000*1000 {
+		t.Errorf("Duration = %d, want %d (seconds→ms conversion)", got[0].Duration, 60000*1000)
+	}
+}
+
 func TestGetAudiobooks_MalformedJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("not json"))

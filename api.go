@@ -132,6 +132,9 @@ func (a *IliadApi) GetAudiobooks() ([]Audiobook, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&books); err != nil {
 		return nil, err
 	}
+	for i := range books {
+		books[i].Duration *= 1000
+	}
 	return books, nil
 }
 

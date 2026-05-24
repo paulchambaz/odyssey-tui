@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -367,6 +368,7 @@ func TestParseInfoYml_BasicParsing(t *testing.T) {
 }
 
 func TestParseInfoYml_WithDurations(t *testing.T) {
+	// info.yml stores duration in seconds; parseInfoYml must convert to ms internally.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "info.yml")
 	writeInfoYml(t, path, `
@@ -376,23 +378,23 @@ date: 2000
 chapters:
   - title: "Ch1"
     path: "01.opus"
-    duration: 120000
+    duration: 120
   - title: "Ch2"
     path: "02.opus"
-    duration: 80000
+    duration: 80
 `)
 	book, err := parseInfoYml(path)
 	if err != nil {
 		t.Fatalf("parseInfoYml: %v", err)
 	}
 	if book.Chapters[0].Duration != 120000 {
-		t.Errorf("Ch1 duration = %d, want 120000", book.Chapters[0].Duration)
+		t.Errorf("Ch1 duration = %d, want 120000 ms", book.Chapters[0].Duration)
 	}
 	if book.Chapters[1].Duration != 80000 {
-		t.Errorf("Ch2 duration = %d, want 80000", book.Chapters[1].Duration)
+		t.Errorf("Ch2 duration = %d, want 80000 ms", book.Chapters[1].Duration)
 	}
 	if book.Duration != 200000 {
-		t.Errorf("total Duration = %d, want 200000", book.Duration)
+		t.Errorf("total Duration = %d, want 200000 ms", book.Duration)
 	}
 }
 
@@ -515,5 +517,200 @@ func TestLoadLocalAudiobooks_SkipsMissingInfoYml(t *testing.T) {
 	}
 	if len(books) != 0 {
 		t.Errorf("expected 0 books, got %d", len(books))
+	}
+}
+
+//  makeTestOpus / opusDurationMs
+
+// makeTestOpus writes a minimal syntactically-valid Ogg Opus file whose
+// duration is exactly durationMs milliseconds. CRC fields are zeroed (the
+// parser does not verify checksums).
+func makeTestOpus(t *testing.T, durationMs int64) string {
+	t.Helper()
+	const preSkip = 312
+	const sampleRate = 48000
+	granule := durationMs*sampleRate/1000 + preSkip
+
+	var buf []byte
+
+	writePage := func(headerType byte, gran int64, seq uint32, data []byte) {
+		// Segment table: split data into 255-byte runs
+		var lace []byte
+		rem := len(data)
+		for rem >= 255 {
+			lace = append(lace, 255)
+			rem -= 255
+		}
+		lace = append(lace, byte(rem))
+
+		buf = append(buf, 'O', 'g', 'g', 'S')
+		buf = append(buf, 0) // version
+		buf = append(buf, headerType)
+		buf = binary.LittleEndian.AppendUint64(buf, uint64(gran))
+		buf = binary.LittleEndian.AppendUint32(buf, 1)       // serial
+		buf = binary.LittleEndian.AppendUint32(buf, seq)     // sequence
+		buf = binary.LittleEndian.AppendUint32(buf, 0)       // CRC (ignored)
+		buf = append(buf, byte(len(lace)))
+		buf = append(buf, lace...)
+		buf = append(buf, data...)
+	}
+
+	// Page 0: BOS with OpusHead (19 bytes of data)
+	head := make([]byte, 19)
+	copy(head[0:8], "OpusHead")
+	head[8] = 1 // version
+	head[9] = 2 // channels
+	binary.LittleEndian.PutUint16(head[10:12], preSkip)
+	binary.LittleEndian.PutUint32(head[12:16], sampleRate)
+	writePage(2, 0, 0, head)
+
+	// Page 1: OpusTags (minimal comment header, 16 bytes)
+	tags := make([]byte, 16)
+	copy(tags[0:8], "OpusTags")
+	binary.LittleEndian.PutUint32(tags[8:12], 4)
+	copy(tags[12:16], "test")
+	writePage(0, 0, 1, tags)
+
+	// Page 2: EOS with final granule
+	writePage(4, granule, 2, []byte{0xf8, 0xff, 0xfe})
+
+	path := filepath.Join(t.TempDir(), "test.opus")
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		t.Fatalf("write test.opus: %v", err)
+	}
+	return path
+}
+
+func TestOpusDurationMs_Basic(t *testing.T) {
+	want := int64(120000) // 2 minutes
+	path := makeTestOpus(t, want)
+	got, err := opusDurationMs(path)
+	if err != nil {
+		t.Fatalf("opusDurationMs: %v", err)
+	}
+	if got != want {
+		t.Errorf("duration = %d ms, want %d ms", got, want)
+	}
+}
+
+func TestOpusDurationMs_Short(t *testing.T) {
+	want := int64(5000) // 5 seconds
+	path := makeTestOpus(t, want)
+	got, err := opusDurationMs(path)
+	if err != nil {
+		t.Fatalf("opusDurationMs: %v", err)
+	}
+	if got != want {
+		t.Errorf("duration = %d ms, want %d ms", got, want)
+	}
+}
+
+func TestOpusDurationMs_MissingFile(t *testing.T) {
+	_, err := opusDurationMs("/nonexistent/file.opus")
+	if err == nil {
+		t.Error("expected error for missing file, got nil")
+	}
+}
+
+//  SaveBookDurations / LoadBookDurations
+
+func TestSaveLoadBookDurations(t *testing.T) {
+	s := newTestStore(t)
+	hash := "abc"
+	os.MkdirAll(s.LibraryDir(hash), 0755)
+	want := []int64{60000, 120000, 90000}
+	if err := s.SaveBookDurations(hash, want); err != nil {
+		t.Fatalf("SaveBookDurations: %v", err)
+	}
+	got := s.LoadBookDurations(hash)
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("durations[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestLoadBookDurations_Missing(t *testing.T) {
+	s := newTestStore(t)
+	got := s.LoadBookDurations("nohash")
+	if got != nil {
+		t.Errorf("expected nil for missing durations, got %v", got)
+	}
+}
+
+//  LoadLocalAudiobooks with probed durations
+
+func TestLoadLocalAudiobooks_ProbesDurations(t *testing.T) {
+	s := newTestStore(t)
+	hash := "probe1"
+	bookDir := filepath.Join(s.dataDir, "library", hash)
+	os.MkdirAll(bookDir, 0755)
+
+	ch1 := makeTestOpus(t, 60000)
+	ch2 := makeTestOpus(t, 90000)
+
+	infoYml := `
+title: "Test Book"
+author: "Author"
+date: 2000
+chapters:
+  - title: "Ch1"
+    path: "ch1.opus"
+  - title: "Ch2"
+    path: "ch2.opus"
+`
+	writeInfoYml(t, filepath.Join(bookDir, "info.yml"), infoYml)
+	os.Link(ch1, filepath.Join(bookDir, "ch1.opus"))
+	os.Link(ch2, filepath.Join(bookDir, "ch2.opus"))
+
+	books, _, _, err := s.LoadLocalAudiobooks()
+	if err != nil {
+		t.Fatalf("LoadLocalAudiobooks: %v", err)
+	}
+	if len(books) != 1 {
+		t.Fatalf("len(books) = %d, want 1", len(books))
+	}
+	b := books[0]
+	if b.Chapters[0].Duration != 60000 {
+		t.Errorf("ch0 duration = %d, want 60000", b.Chapters[0].Duration)
+	}
+	if b.Chapters[1].Duration != 90000 {
+		t.Errorf("ch1 duration = %d, want 90000", b.Chapters[1].Duration)
+	}
+	if b.Duration != 150000 {
+		t.Errorf("total duration = %d, want 150000", b.Duration)
+	}
+}
+
+func TestLoadLocalAudiobooks_UsesCachedDurations(t *testing.T) {
+	s := newTestStore(t)
+	hash := "cache1"
+	bookDir := filepath.Join(s.dataDir, "library", hash)
+	os.MkdirAll(bookDir, 0755)
+
+	infoYml := `
+title: "Test Book"
+author: "Author"
+date: 2000
+chapters:
+  - title: "Ch1"
+    path: "ch1.opus"
+`
+	writeInfoYml(t, filepath.Join(bookDir, "info.yml"), infoYml)
+	// Pre-save durations (as if already probed) — no audio file present.
+	s.SaveBookDurations(hash, []int64{75000})
+
+	books, _, _, err := s.LoadLocalAudiobooks()
+	if err != nil {
+		t.Fatalf("LoadLocalAudiobooks: %v", err)
+	}
+	if len(books) != 1 {
+		t.Fatalf("len(books) = %d, want 1", len(books))
+	}
+	if books[0].Chapters[0].Duration != 75000 {
+		t.Errorf("duration = %d, want 75000 (from cache, no probe)", books[0].Chapters[0].Duration)
 	}
 }

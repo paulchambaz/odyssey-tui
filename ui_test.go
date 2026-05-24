@@ -110,8 +110,8 @@ func TestWrapText_LongWord_NeverSplit(t *testing.T) {
 func TestBookChip_Ready(t *testing.T) {
 	b := &Audiobook{State: DownloadReady}
 	chip, _ := bookChip(b)
-	if chip != "[ready]" {
-		t.Errorf("got %q, want [ready]", chip)
+	if chip != "[downloaded]" {
+		t.Errorf("got %q, want [downloaded]", chip)
 	}
 }
 
@@ -191,32 +191,6 @@ func TestFmtSize_FractionalGB(t *testing.T) {
 	got := fmtSize(int64(1.5 * 1024 * 1024 * 1024))
 	if got != "1.5 GB" {
 		t.Errorf("got %q, want %q", got, "1.5 GB")
-	}
-}
-
-//  chapterLabel 
-
-func TestChapterLabel_InBounds(t *testing.T) {
-	b := &Audiobook{Chapters: []Chapter{{Title: "Prologue"}, {Title: "Chapter 1"}}}
-	got := chapterLabel(b, 0)
-	if got != "Prologue" {
-		t.Errorf("got %q, want %q", got, "Prologue")
-	}
-}
-
-func TestChapterLabel_OutOfBounds(t *testing.T) {
-	b := &Audiobook{Chapters: []Chapter{{Title: "Only"}}}
-	got := chapterLabel(b, 5)
-	if got != "Chapter 6" {
-		t.Errorf("got %q, want %q", got, "Chapter 6")
-	}
-}
-
-func TestChapterLabel_EmptyChapters(t *testing.T) {
-	b := &Audiobook{}
-	got := chapterLabel(b, 0)
-	if got != "Chapter 1" {
-		t.Errorf("got %q, want %q", got, "Chapter 1")
 	}
 }
 
@@ -375,8 +349,8 @@ func TestBuildBookDetail_ChipShownWhenShowChip(t *testing.T) {
 	b := makeDetailBook()
 	lines := ps.buildBookDetail(b, 40, 10, true, 0, false)
 	line3 := lines[3]
-	if !strings.Contains(line3, "[ready]") {
-		t.Errorf("line[3] = %q, want chip '[ready]'", line3)
+	if !strings.Contains(line3, "[downloaded]") {
+		t.Errorf("line[3] = %q, want chip '[downloaded]'", line3)
 	}
 }
 
@@ -385,7 +359,7 @@ func TestBuildBookDetail_NoChipWhenNotShowChip(t *testing.T) {
 	b := makeDetailBook()
 	lines := ps.buildBookDetail(b, 40, 10, false, 0, false)
 	line3 := lines[3]
-	if strings.Contains(line3, "[ready]") {
+	if strings.Contains(line3, "[downloaded]") {
 		t.Errorf("line[3] = %q, should not contain chip", line3)
 	}
 }

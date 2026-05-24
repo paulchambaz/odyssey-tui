@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -47,24 +49,13 @@ func TestHandleKey_DispatchesToMode(t *testing.T) {
 		t.Error("q in ModeMain should quit")
 	}
 
-	// q in ModePlayer → back to main (not quit)
-	ps2 := newPlayerState(makeLib("", nil))
-	ps2.mode = ModePlayer
-	ps3, cmd2 := pressKey(ps2, "q")
-	if isQuitCmd(cmd2) {
-		t.Error("q in ModePlayer should not quit")
-	}
-	if ps3.mode != ModeMain {
-		t.Errorf("mode = %v, want ModeMain", ps3.mode)
-	}
-
 	// q in ModeHelp → returnMode
 	ps4 := newPlayerState(makeLib("", nil))
 	ps4.mode = ModeHelp
-	ps4.returnMode = ModePlayer
+	ps4.returnMode = ModeMain
 	ps5, _ := pressKey(ps4, "q")
-	if ps5.mode != ModePlayer {
-		t.Errorf("mode = %v, want ModePlayer", ps5.mode)
+	if ps5.mode != ModeMain {
+		t.Errorf("mode = %v, want ModeMain", ps5.mode)
 	}
 }
 
@@ -99,10 +90,13 @@ func TestHandleMain_J_ScrollsAlbums(t *testing.T) {
 }
 
 func TestHandleMain_J_ScrollsAlbums_WithPosition(t *testing.T) {
-	pos := &Position{ChapterIndex: 4, Timestamp: 1}
+	// posA has higher timestamp so book "a" sorts first; posB lower timestamp sorts second.
+	// Both are in-progress (rank 0) so only timestamp differentiates order.
+	posA := &Position{ChapterIndex: 2, Timestamp: 100}
+	posB := &Position{ChapterIndex: 4, Timestamp: 1}
 	books := []Audiobook{
-		makeBook("a", DownloadReady, makeChapters(1000, 1000, 1000, 1000, 1000), nil),
-		makeBook("b", DownloadReady, makeChapters(1000, 1000, 1000, 1000, 1000), pos),
+		makeBook("a", DownloadReady, makeChapters(1000, 1000, 1000, 1000, 1000), posA),
+		makeBook("b", DownloadReady, makeChapters(1000, 1000, 1000, 1000, 1000), posB),
 	}
 	ps := newPlayerState(makeLib("", books))
 	ps.onAlbum = true
@@ -210,114 +204,6 @@ func TestHandleMain_K_ChaptersAtStart_NoChange(t *testing.T) {
 	}
 }
 
-//  handlePlayer 
-
-func makePlayerState(book Audiobook) *PlayerState {
-	ps := newPlayerState(makeLib("", nil))
-	ps.mode = ModePlayer
-	ps.playerBook = &book
-	return ps
-}
-
-func TestHandlePlayer_Q_ReturnToMain(t *testing.T) {
-	ps := makePlayerState(makeBook("x", DownloadReady, makeChapters(1000), nil))
-	ps2, _ := pressKey(ps, "q")
-	if ps2.mode != ModeMain {
-		t.Errorf("mode = %v, want ModeMain", ps2.mode)
-	}
-}
-
-func TestHandlePlayer_Esc_ReturnToMain(t *testing.T) {
-	ps := makePlayerState(makeBook("x", DownloadReady, makeChapters(1000), nil))
-	ps2, _ := pressKey(ps, "esc")
-	if ps2.mode != ModeMain {
-		t.Errorf("mode = %v, want ModeMain", ps2.mode)
-	}
-}
-
-func TestHandlePlayer_S_CyclesSpeed(t *testing.T) {
-	ps := makePlayerState(makeBook("x", DownloadReady, nil, nil))
-	ps.playerSpeed = 1.00
-	ps2, _ := pressKey(ps, "s")
-	if ps2.playerSpeed != 1.50 {
-		t.Errorf("playerSpeed = %v, want 1.50", ps2.playerSpeed)
-	}
-}
-
-func TestHandlePlayer_S_CyclesSpeedWrapsAround(t *testing.T) {
-	ps := makePlayerState(makeBook("x", DownloadReady, nil, nil))
-	ps.playerSpeed = 3.00 // last in playerSpeeds
-	ps2, _ := pressKey(ps, "s")
-	if ps2.playerSpeed != 0.50 {
-		t.Errorf("playerSpeed = %v, want 0.50 (wrapped)", ps2.playerSpeed)
-	}
-}
-
-func TestHandlePlayer_S_UnknownSpeed_NoChange(t *testing.T) {
-	ps := makePlayerState(makeBook("x", DownloadReady, nil, nil))
-	ps.playerSpeed = 99.0
-	ps2, _ := pressKey(ps, "s")
-	if ps2.playerSpeed != 99.0 {
-		t.Errorf("playerSpeed = %v, want 99.0 (no match in list)", ps2.playerSpeed)
-	}
-}
-
-func TestHandlePlayer_J_ScrollsChapters(t *testing.T) {
-	book := makeBook("x", DownloadReady, makeChapters(1000, 1000, 1000, 1000, 1000), nil)
-	ps := makePlayerState(book)
-	ps.playerChSel = 2
-	ps2, _ := pressKey(ps, "j")
-	if ps2.playerChSel != 3 {
-		t.Errorf("playerChSel = %d, want 3", ps2.playerChSel)
-	}
-}
-
-func TestHandlePlayer_J_AtEnd_NoChange(t *testing.T) {
-	book := makeBook("x", DownloadReady, makeChapters(1000, 1000), nil)
-	ps := makePlayerState(book)
-	ps.playerChSel = 1 // last
-	ps2, _ := pressKey(ps, "j")
-	if ps2.playerChSel != 1 {
-		t.Errorf("playerChSel = %d, want 1 (no change)", ps2.playerChSel)
-	}
-}
-
-func TestHandlePlayer_J_NilBook_NoChange(t *testing.T) {
-	ps := newPlayerState(makeLib("", nil))
-	ps.mode = ModePlayer
-	ps.playerBook = nil
-	ps.playerChSel = 2
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("panicked with nil playerBook: %v", r)
-		}
-	}()
-	ps2, _ := pressKey(ps, "j")
-	if ps2.playerChSel != 2 {
-		t.Errorf("playerChSel = %d, want 2 (no change with nil book)", ps2.playerChSel)
-	}
-}
-
-func TestHandlePlayer_K_ScrollsChapters(t *testing.T) {
-	book := makeBook("x", DownloadReady, makeChapters(1000, 1000, 1000), nil)
-	ps := makePlayerState(book)
-	ps.playerChSel = 2
-	ps2, _ := pressKey(ps, "k")
-	if ps2.playerChSel != 1 {
-		t.Errorf("playerChSel = %d, want 1", ps2.playerChSel)
-	}
-}
-
-func TestHandlePlayer_K_AtStart_NoChange(t *testing.T) {
-	book := makeBook("x", DownloadReady, makeChapters(1000), nil)
-	ps := makePlayerState(book)
-	ps.playerChSel = 0
-	ps2, _ := pressKey(ps, "k")
-	if ps2.playerChSel != 0 {
-		t.Errorf("playerChSel = %d, want 0 (no change)", ps2.playerChSel)
-	}
-}
-
 //  handleHelp 
 
 func TestHandleHelp_Q_ReturnsToReturnMode(t *testing.T) {
@@ -333,10 +219,10 @@ func TestHandleHelp_Q_ReturnsToReturnMode(t *testing.T) {
 func TestHandleHelp_Esc_ReturnsToReturnMode(t *testing.T) {
 	ps := newPlayerState(makeLib("", nil))
 	ps.mode = ModeHelp
-	ps.returnMode = ModePlayer
+	ps.returnMode = ModeSearch
 	ps2, _ := pressKey(ps, "esc")
-	if ps2.mode != ModePlayer {
-		t.Errorf("mode = %v, want ModePlayer", ps2.mode)
+	if ps2.mode != ModeSearch {
+		t.Errorf("mode = %v, want ModeSearch", ps2.mode)
 	}
 }
 
@@ -362,9 +248,9 @@ func TestHandleHelp_OtherKey_NoChange(t *testing.T) {
 	}
 }
 
-//  handleMain — d download/cancel
+//  handleMain — enter download/cancel/play in library
 
-func TestHandleMain_D_Remote_StartsDownload(t *testing.T) {
+func TestHandleMain_Enter_Remote_StartsDownload(t *testing.T) {
 	book := makeBook("a", DownloadRemote, nil, nil)
 	mock := &MockApiClient{
 		GetAudiobooksFn: func() ([]Audiobook, error) { return nil, nil },
@@ -375,16 +261,16 @@ func TestHandleMain_D_Remote_StartsDownload(t *testing.T) {
 	ps.libActive = true
 	ps.libSel = 0
 
-	ps2, cmd := pressKey(ps, "d")
+	ps2, cmd := pressKey(ps, "enter")
 	if cmd == nil {
-		t.Error("d on DownloadRemote should return a non-nil download cmd")
+		t.Error("enter on DownloadRemote should return a non-nil download cmd")
 	}
 	if ps2.lib.Books[0].State != DownloadInProgress {
 		t.Errorf("state = %v, want DownloadInProgress", ps2.lib.Books[0].State)
 	}
 }
 
-func TestHandleMain_D_InProgress_Cancels(t *testing.T) {
+func TestHandleMain_Enter_InProgress_Cancels(t *testing.T) {
 	book := makeBook("a", DownloadInProgress, nil, nil)
 	cancelled := false
 	ps := newPlayerState(makeLib("", []Audiobook{book}))
@@ -394,68 +280,9 @@ func TestHandleMain_D_InProgress_Cancels(t *testing.T) {
 	ps.libActive = true
 	ps.libSel = 0
 
-	pressKey(ps, "d")
+	pressKey(ps, "enter")
 	if !cancelled {
-		t.Error("d on DownloadInProgress should call the cancel func")
-	}
-}
-
-//  handleMain — p / enter play
-
-func TestHandleMain_P_Ready(t *testing.T) {
-	book := makeBook("a", DownloadReady, makeChapters(1000, 2000), nil)
-	ps := newPlayerState(makeLib("", []Audiobook{book}))
-	ps.libActive = true
-	ps.libSel = 0
-
-	ps2, _ := pressKey(ps, "p")
-	if ps2.mode != ModePlayer {
-		t.Errorf("mode = %v, want ModePlayer", ps2.mode)
-	}
-}
-
-func TestHandleMain_Enter_Ready(t *testing.T) {
-	book := makeBook("a", DownloadReady, makeChapters(1000, 2000), nil)
-	ps := newPlayerState(makeLib("", []Audiobook{book}))
-	ps.libActive = true
-	ps.libSel = 0
-
-	ps2, _ := pressKey(ps, "enter")
-	if ps2.mode != ModePlayer {
-		t.Errorf("mode = %v, want ModePlayer", ps2.mode)
-	}
-}
-
-func TestHandleMain_P_NotReady_Remote(t *testing.T) {
-	book := makeBook("a", DownloadRemote, nil, nil)
-	ps := newPlayerState(makeLib("", []Audiobook{book}))
-	ps.libActive = true
-	ps.libSel = 0
-
-	ps2, _ := pressKey(ps, "p")
-	if ps2.statusMsg == "" {
-		t.Error("p on remote book should set statusMsg")
-	}
-	if !ps2.statusErr {
-		t.Error("p on remote book should set statusErr")
-	}
-	if ps2.mode != ModeMain {
-		t.Errorf("mode = %v, want ModeMain (no play on non-ready)", ps2.mode)
-	}
-}
-
-func TestHandleMain_P_NotReady_Preparing(t *testing.T) {
-	book := makeBook("a", DownloadPreparing, nil, nil)
-	ps := newPlayerState(makeLib("", []Audiobook{book}))
-	ps.libActive = true
-	ps.libSel = 0
-
-	ps2, _ := pressKey(ps, "p")
-	if ps2.statusMsg == "" {
-		t.Error("p on preparing book should set statusMsg")
-	}
-	if !ps2.statusErr {
-		t.Error("p on preparing book should set statusErr")
+		t.Error("enter on DownloadInProgress should call the cancel func")
 	}
 }
 
@@ -478,7 +305,43 @@ func TestHandleMain_R_FetchesBooks(t *testing.T) {
 	}
 }
 
-//  handleMain — h/l panel navigation
+//  handleMain — l library toggle, H/L panel navigation
+
+func TestHandleMain_D_ToggleShowsLibrary(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showLibrary = false
+	ps2, _ := pressKey(ps, "d")
+	if !ps2.showLibrary {
+		t.Error("d should set showLibrary")
+	}
+}
+
+func TestHandleMain_D_ToggleHidesLibrary(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showLibrary = true
+	ps.libActive = false
+	ps2, _ := pressKey(ps, "d")
+	if ps2.showLibrary {
+		t.Error("d should clear showLibrary")
+	}
+}
+
+func TestHandleMain_D_ToggleHidesLibraryAndResetsFocus(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showLibrary = true
+	ps.libActive = true
+	ps.onAlbum = false
+	ps2, _ := pressKey(ps, "d")
+	if ps2.showLibrary {
+		t.Error("d hiding library should clear showLibrary")
+	}
+	if ps2.libActive {
+		t.Error("d hiding library should clear libActive")
+	}
+	if !ps2.onAlbum {
+		t.Error("d hiding library should set onAlbum")
+	}
+}
 
 func TestHandleMain_H_ChaptersToAlbums(t *testing.T) {
 	ps := newPlayerState(makeLib("", nil))
@@ -757,5 +620,742 @@ func TestHandleMain_LowI_ClosingAlbumClearsFocused(t *testing.T) {
 	ps2, _ := pressKey(ps, "i")
 	if ps2.albumInfoFocused {
 		t.Error("closing album info should clear albumInfoFocused")
+	}
+}
+
+//  handleMain — x delete
+
+func TestHandleMain_X_ReturnsCmdOnReadyBook(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.store = newTestStore(t)
+	ps.onAlbum = true
+	ps.albumSelected = 0
+	_, cmd := pressKey(ps, "x")
+	if cmd == nil {
+		t.Error("x on ready book should return non-nil cmd")
+	}
+}
+
+func TestHandleMain_X_ChangesStateImmediately(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.store = newTestStore(t)
+	ps.onAlbum = true
+	ps.albumSelected = 0
+	ps2, _ := pressKey(ps, "x")
+	if len(ps2.localBooks()) != 0 {
+		t.Errorf("localBooks after x should be empty, got %d", len(ps2.localBooks()))
+	}
+}
+
+func TestHandleMain_X_CmdDeletesDirectory(t *testing.T) {
+	s := newTestStore(t)
+	bookDir := filepath.Join(s.dataDir, "library", "a")
+	os.MkdirAll(bookDir, 0755)
+	book := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.store = s
+	ps.onAlbum = true
+	ps.albumSelected = 0
+	_, cmd := pressKey(ps, "x")
+	if cmd == nil {
+		t.Fatal("x should return non-nil cmd")
+	}
+	cmd()
+	if _, err := os.Stat(bookDir); !os.IsNotExist(err) {
+		t.Error("x cmd should delete the book directory")
+	}
+}
+
+func TestHandleMain_X_CmdReturnsLocalBooksMsg(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.store = newTestStore(t)
+	ps.onAlbum = true
+	ps.albumSelected = 0
+	_, cmd := pressKey(ps, "x")
+	if cmd == nil {
+		t.Fatal("x should return non-nil cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(localBooksMsg); !ok {
+		t.Errorf("cmd() returned %T, want localBooksMsg", msg)
+	}
+}
+
+func TestHandleMain_X_NoopWhenLibActive(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.store = newTestStore(t)
+	ps.libActive = true
+	ps.onAlbum = false
+	ps2, cmd := pressKey(ps, "x")
+	if cmd != nil {
+		t.Error("x in library panel should not return cmd")
+	}
+	if len(ps2.localBooks()) != 1 {
+		t.Error("x in library panel should not change local books")
+	}
+}
+
+func TestHandleMain_X_NoopWhenNilStore(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.store = nil
+	ps.onAlbum = true
+	ps.albumSelected = 0
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("x with nil store should not panic: %v", r)
+		}
+	}()
+	pressKey(ps, "x")
+}
+
+//  handleMain — / search entry
+
+func TestHandleMain_Slash_EntersModeSearch(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.onAlbum = true
+	ps.libActive = false
+	ps2, _ := pressKey(ps, "/")
+	if ps2.mode != ModeSearch {
+		t.Errorf("mode = %v, want ModeSearch", ps2.mode)
+	}
+}
+
+func TestHandleMain_Slash_SavesAlbumCursor(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.onAlbum = true
+	ps.albumSelected = 0
+	ps.albumOffset = 0
+	ps2, _ := pressKey(ps, "/")
+	if ps2.searchSavedAlbum != 0 {
+		t.Errorf("searchSavedAlbum = %d, want 0", ps2.searchSavedAlbum)
+	}
+}
+
+func TestHandleMain_Slash_ClearsQuery(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.onAlbum = true
+	ps.searchQuery = "stale"
+	ps2, _ := pressKey(ps, "/")
+	if ps2.searchQuery != "" {
+		t.Errorf("searchQuery = %q, want empty after /", ps2.searchQuery)
+	}
+}
+
+func TestHandleMain_Slash_NoopWhenLibActive(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.libActive = true
+	ps.onAlbum = false
+	ps2, _ := pressKey(ps, "/")
+	if ps2.mode == ModeSearch {
+		t.Error("/ in library panel should not enter ModeSearch")
+	}
+}
+
+//  handleSearch
+
+func TestHandleSearch_TypingRune_AppendsToQuery(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeSearch
+	ps2, _ := pressKey(ps, "d")
+	if ps2.searchQuery != "d" {
+		t.Errorf("searchQuery = %q, want %q", ps2.searchQuery, "d")
+	}
+}
+
+func TestHandleSearch_TypingMultipleRunes(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeSearch
+	ps2, _ := pressKey(ps, "d")
+	ps3, _ := pressKey(ps2, "u")
+	if ps3.searchQuery != "du" {
+		t.Errorf("searchQuery = %q, want %q", ps3.searchQuery, "du")
+	}
+}
+
+func TestHandleSearch_TypingRune_RunsSearch(t *testing.T) {
+	b := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	b.Title = "Dune"
+	ps := newPlayerState(makeLib("", []Audiobook{b}))
+	ps.mode = ModeSearch
+	ps2, _ := pressKey(ps, "d")
+	if len(ps2.searchMatches) == 0 {
+		t.Error("typing should populate searchMatches via runSearch")
+	}
+}
+
+func TestHandleSearch_Backspace_RemovesLastChar(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeSearch
+	ps.searchQuery = "ab"
+	ps2, _ := pressKey(ps, "backspace")
+	if ps2.searchQuery != "a" {
+		t.Errorf("searchQuery = %q, want %q after backspace", ps2.searchQuery, "a")
+	}
+}
+
+func TestHandleSearch_Backspace_Empty_RestoresCursor(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeSearch
+	ps.searchQuery = ""
+	ps.searchSavedAlbum = 2
+	ps.searchSavedOffset = 1
+	ps.albumSelected = 5
+	ps.albumOffset = 3
+	ps2, _ := pressKey(ps, "backspace")
+	if ps2.albumSelected != 2 {
+		t.Errorf("albumSelected = %d, want 2 (restored)", ps2.albumSelected)
+	}
+	if ps2.albumOffset != 1 {
+		t.Errorf("albumOffset = %d, want 1 (restored)", ps2.albumOffset)
+	}
+	if ps2.mode != ModeMain {
+		t.Errorf("mode = %v, want ModeMain after empty backspace", ps2.mode)
+	}
+}
+
+func TestHandleSearch_Enter_NonEmpty_TransitionsToSearching(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.mode = ModeSearch
+	ps.searchQuery = "foo"
+	ps.searchMatches = []int{0}
+	ps2, _ := pressKey(ps, "enter")
+	if ps2.mode != ModeSearching {
+		t.Errorf("mode = %v, want ModeSearching", ps2.mode)
+	}
+}
+
+func TestHandleSearch_Enter_Empty_CancelsSearch(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeSearch
+	ps.searchQuery = ""
+	ps.searchSavedAlbum = 1
+	ps.albumSelected = 3
+	ps2, _ := pressKey(ps, "enter")
+	if ps2.mode == ModeSearching {
+		t.Error("enter with empty query should not enter ModeSearching")
+	}
+	if ps2.albumSelected != 1 {
+		t.Errorf("albumSelected = %d, want 1 (restored on cancel)", ps2.albumSelected)
+	}
+}
+
+func TestHandleSearch_Escape_CancelsAndRestores(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeSearch
+	ps.searchQuery = "foo"
+	ps.searchSavedAlbum = 3
+	ps.albumSelected = 7
+	ps2, _ := pressKey(ps, "esc")
+	if ps2.mode != ModeMain {
+		t.Errorf("mode = %v, want ModeMain after esc", ps2.mode)
+	}
+	if ps2.albumSelected != 3 {
+		t.Errorf("albumSelected = %d, want 3 (restored)", ps2.albumSelected)
+	}
+}
+
+//  handleSearching
+
+func TestHandleSearching_N_AdvancesMatchIdx(t *testing.T) {
+	b1 := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	b2 := makeBook("b", DownloadReady, makeChapters(1000), nil)
+	b3 := makeBook("c", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b1, b2, b3}))
+	ps.mode = ModeSearching
+	ps.searchMatches = []int{0, 1, 2}
+	ps.searchMatchIdx = 0
+	ps2, _ := pressKey(ps, "n")
+	if ps2.searchMatchIdx != 1 {
+		t.Errorf("searchMatchIdx = %d, want 1", ps2.searchMatchIdx)
+	}
+	if ps2.albumSelected != 1 {
+		t.Errorf("albumSelected = %d, want 1 (searchMatches[1])", ps2.albumSelected)
+	}
+}
+
+func TestHandleSearching_N_Wraps(t *testing.T) {
+	b1 := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	b2 := makeBook("b", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b1, b2}))
+	ps.mode = ModeSearching
+	ps.searchMatches = []int{0, 1}
+	ps.searchMatchIdx = 1
+	ps2, _ := pressKey(ps, "n")
+	if ps2.searchMatchIdx != 0 {
+		t.Errorf("searchMatchIdx = %d, want 0 (wrapped)", ps2.searchMatchIdx)
+	}
+}
+
+func TestHandleSearching_P_DecrementsIdx(t *testing.T) {
+	b1 := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	b2 := makeBook("b", DownloadReady, makeChapters(1000), nil)
+	b3 := makeBook("c", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b1, b2, b3}))
+	ps.mode = ModeSearching
+	ps.searchMatches = []int{0, 1, 2}
+	ps.searchMatchIdx = 2
+	ps2, _ := pressKey(ps, "p")
+	if ps2.searchMatchIdx != 1 {
+		t.Errorf("searchMatchIdx = %d, want 1", ps2.searchMatchIdx)
+	}
+}
+
+func TestHandleSearching_P_WrapsBackward(t *testing.T) {
+	b1 := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	b2 := makeBook("b", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b1, b2}))
+	ps.mode = ModeSearching
+	ps.searchMatches = []int{0, 1}
+	ps.searchMatchIdx = 0
+	ps2, _ := pressKey(ps, "p")
+	if ps2.searchMatchIdx != 1 {
+		t.Errorf("searchMatchIdx = %d, want 1 (wrapped backward)", ps2.searchMatchIdx)
+	}
+}
+
+func TestHandleSearching_Enter_ExitsKeepPosition(t *testing.T) {
+	b1 := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	b2 := makeBook("b", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b1, b2}))
+	ps.mode = ModeSearching
+	ps.searchMatches = []int{1, 0}
+	ps.searchMatchIdx = 0
+	ps.albumSelected = 1
+	ps.searchSavedAlbum = 0
+	ps2, _ := pressKey(ps, "enter")
+	if ps2.mode != ModeMain {
+		t.Errorf("mode = %v, want ModeMain", ps2.mode)
+	}
+	if ps2.albumSelected != 1 {
+		t.Errorf("albumSelected = %d, want 1 (kept)", ps2.albumSelected)
+	}
+}
+
+func TestHandleSearching_Escape_RestoresOriginal(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeSearching
+	ps.albumSelected = 5
+	ps.searchSavedAlbum = 1
+	ps.searchSavedOffset = 0
+	ps2, _ := pressKey(ps, "esc")
+	if ps2.mode != ModeMain {
+		t.Errorf("mode = %v, want ModeMain", ps2.mode)
+	}
+	if ps2.albumSelected != 1 {
+		t.Errorf("albumSelected = %d, want 1 (restored)", ps2.albumSelected)
+	}
+}
+
+func TestHandleSearching_Slash_ReturnToSearch(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeSearching
+	ps2, _ := pressKey(ps, "/")
+	if ps2.mode != ModeSearch {
+		t.Errorf("mode = %v, want ModeSearch", ps2.mode)
+	}
+}
+
+//  handleMain — p play
+
+func TestHandleMain_P_SetsAlbumPlayingAndReturnsCmd(t *testing.T) {
+	book := makeBook("h1", DownloadReady, makeChapters(1000, 1000), nil)
+	mock := &MockApiClient{
+		GetPositionFn: func(hash string) (Position, error) { return Position{}, nil },
+	}
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.api = mock
+	ps.onAlbum = true
+	ps.albumSelected = 0
+
+	ps2, cmd := pressKey(ps, "p")
+	if ps2.albumPlaying == nil || *ps2.albumPlaying != 0 {
+		t.Errorf("albumPlaying = %v, want &0", ps2.albumPlaying)
+	}
+	if cmd == nil {
+		t.Error("p should return fetchPositionAndPlayCmd (non-nil cmd)")
+	}
+	if ps2.lib.PlayingHash != "h1" {
+		t.Errorf("PlayingHash = %q, want %q", ps2.lib.PlayingHash, "h1")
+	}
+}
+
+func TestHandleMain_P_NoopWhenNoBooks(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.onAlbum = true
+	ps.albumSelected = 0
+	ps2, cmd := pressKey(ps, "p")
+	if ps2.albumPlaying != nil {
+		t.Error("p with no books should not set albumPlaying")
+	}
+	if cmd != nil {
+		t.Error("p with no books should return nil cmd")
+	}
+}
+
+func TestHandleMain_P_NoopWhenLibActive(t *testing.T) {
+	book := makeBook("h1", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.libActive = true
+	ps2, _ := pressKey(ps, "p")
+	if ps2.albumPlaying != nil {
+		t.Error("p in library panel should not set albumPlaying")
+	}
+}
+
+func TestHandleMain_P_SetsTrackPlayingFromPosition(t *testing.T) {
+	pos := &Position{ChapterIndex: 2, Timestamp: 1}
+	book := makeBook("h1", DownloadReady, makeChapters(1000, 1000, 1000), pos)
+	mock := &MockApiClient{
+		GetPositionFn: func(hash string) (Position, error) { return Position{}, nil },
+	}
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.api = mock
+	ps.onAlbum = true
+	ps.albumSelected = 0
+
+	ps2, _ := pressKey(ps, "p")
+	if ps2.trackPlaying == nil || *ps2.trackPlaying != 2 {
+		t.Errorf("trackPlaying = %v, want &2 (from position)", ps2.trackPlaying)
+	}
+}
+
+//  handleMain — space play/pause
+
+func TestHandleMain_Space_PausesWhenPlaying(t *testing.T) {
+	book := makeBook("h1", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	idx := 0
+	ps.albumPlaying = &idx
+	ps.playerPaused = false
+
+	ps2, _ := pressKey(ps, "space")
+	if !ps2.playerPaused {
+		t.Error("space should pause when playing")
+	}
+}
+
+func TestHandleMain_Space_PlaysWhenPaused(t *testing.T) {
+	book := makeBook("h1", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	idx := 0
+	ps.albumPlaying = &idx
+	ps.playerPaused = true
+
+	ps2, _ := pressKey(ps, "space")
+	if ps2.playerPaused {
+		t.Error("space should unpause when paused")
+	}
+}
+
+func TestHandleMain_Space_NoopWhenNotPlaying(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.albumPlaying = nil
+	ps.playerPaused = false
+
+	ps2, _ := pressKey(ps, "space")
+	if ps2.playerPaused {
+		t.Error("space when not playing should not set playerPaused")
+	}
+}
+
+//  handleKey — y/n conflict handlers
+
+func TestHandleKey_Y_ClearsConflictAndReturnsSync(t *testing.T) {
+	s := newTestStore(t)
+	mock := &MockApiClient{
+		PutPositionFn: func(hash string, pos Position) error { return nil },
+	}
+	book := makeBook("h1", DownloadReady, makeChapters(1000, 1000, 1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.api = mock
+	ps.store = s
+	idx := 0
+	ps.albumPlaying = &idx
+	localPos := Position{ChapterIndex: 1, ChapterPosition: 5000, Timestamp: 200}
+	srvPos := Position{ChapterIndex: 2, ChapterPosition: 3000, Timestamp: 150}
+	ps.conflictHash = "h1"
+	ps.conflictLocal = &localPos
+	ps.conflictServer = &srvPos
+
+	ps2, cmd := pressKey(ps, "y")
+	if ps2.conflictHash != "" {
+		t.Errorf("conflictHash = %q, want empty after y", ps2.conflictHash)
+	}
+	if ps2.conflictLocal != nil || ps2.conflictServer != nil {
+		t.Error("conflict fields should be nil after y")
+	}
+	if cmd == nil {
+		t.Error("y should return a sync cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(syncDoneMsg); !ok {
+		t.Errorf("cmd() = %T, want syncDoneMsg", msg)
+	}
+}
+
+func TestHandleKey_Y_SetsTrackToLocalChapter(t *testing.T) {
+	book := makeBook("h1", DownloadReady, makeChapters(1000, 1000, 1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	idx := 0
+	ps.albumPlaying = &idx
+	localPos := Position{ChapterIndex: 1, ChapterPosition: 5000, Timestamp: 200}
+	srvPos := Position{ChapterIndex: 2, ChapterPosition: 3000, Timestamp: 150}
+	ps.conflictHash = "h1"
+	ps.conflictLocal = &localPos
+	ps.conflictServer = &srvPos
+
+	ps2, _ := pressKey(ps, "y")
+	if ps2.trackSelected != 1 {
+		t.Errorf("trackSelected = %d, want 1 (local chapter)", ps2.trackSelected)
+	}
+}
+
+func TestHandleKey_N_ClearsConflictAndSavesServerPos(t *testing.T) {
+	s := newTestStore(t)
+	book := makeBook("h1", DownloadReady, makeChapters(1000, 1000, 1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.store = s
+	idx := 0
+	ps.albumPlaying = &idx
+	localPos := Position{ChapterIndex: 1, ChapterPosition: 5000, Timestamp: 200}
+	srvPos := Position{ChapterIndex: 2, ChapterPosition: 3000, Timestamp: 150}
+	ps.conflictHash = "h1"
+	ps.conflictLocal = &localPos
+	ps.conflictServer = &srvPos
+
+	ps2, _ := pressKey(ps, "n")
+	if ps2.conflictHash != "" {
+		t.Errorf("conflictHash = %q, want empty after n", ps2.conflictHash)
+	}
+	if ps2.conflictLocal != nil || ps2.conflictServer != nil {
+		t.Error("conflict fields should be nil after n")
+	}
+	saved := s.LoadPosition("h1")
+	if saved == nil || *saved != srvPos {
+		t.Errorf("LoadPosition = %v, want %v (server pos saved)", saved, srvPos)
+	}
+}
+
+func TestHandleKey_N_SetsTrackToServerChapter(t *testing.T) {
+	book := makeBook("h1", DownloadReady, makeChapters(1000, 1000, 1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	idx := 0
+	ps.albumPlaying = &idx
+	localPos := Position{ChapterIndex: 1, ChapterPosition: 5000, Timestamp: 200}
+	srvPos := Position{ChapterIndex: 2, ChapterPosition: 3000, Timestamp: 150}
+	ps.conflictHash = "h1"
+	ps.conflictLocal = &localPos
+	ps.conflictServer = &srvPos
+
+	ps2, _ := pressKey(ps, "n")
+	if ps2.trackSelected != 2 {
+		t.Errorf("trackSelected = %d, want 2 (server chapter)", ps2.trackSelected)
+	}
+}
+
+func TestHandleKey_ConflictActive_OtherKeysBlocked(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.conflictHash = "h1"
+	ps.conflictLocal = &Position{}
+	ps.conflictServer = &Position{}
+
+	// j should not scroll when conflict is active
+	ps2, _ := pressKey(ps, "j")
+	if ps2.conflictHash == "" {
+		t.Error("conflict should not be cleared by j")
+	}
+	// q should not quit when conflict is active
+	_, cmd := pressKey(ps, "q")
+	if isQuitCmd(cmd) {
+		t.Error("q should not quit while conflict dialog is active")
+	}
+}
+
+//  handleMain — Q logout
+
+func TestHandleMain_Q_ClearsCredentialsAndQuits(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SaveCredentials(Credentials{BaseURL: "http://x", Username: "u", Password: "p", Token: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	ps := newPlayerState(makeLib("", nil))
+	ps.store = s
+
+	_, cmd := pressKey(ps, "Q")
+	if !isQuitCmd(cmd) {
+		t.Error("Q should produce quit cmd")
+	}
+	if creds := s.LoadCredentials(); creds != nil {
+		t.Error("Q should clear credentials")
+	}
+}
+
+func TestHandleMain_Q_NilStore_StillQuits(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.store = nil
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("Q with nil store should not panic: %v", r)
+		}
+	}()
+	_, cmd := pressKey(ps, "Q")
+	if !isQuitCmd(cmd) {
+		t.Error("Q should produce quit cmd even with nil store")
+	}
+}
+
+//  handleMain — speed overlay
+
+func TestHandleMain_S_OpensSpeedOverlay(t *testing.T) {
+	books := []Audiobook{makeBook("h1", DownloadReady, makeChapters(1000), nil)}
+	ps := newPlayerState(makeLib("", books))
+	idx := 0
+	ps.albumPlaying = &idx
+	ps2, _ := pressKey(ps, "s")
+	if !ps2.showSpeed {
+		t.Error("showSpeed = false, want true after s while playing")
+	}
+}
+
+func TestHandleMain_S_NoOp_WhenNotPlaying(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps2, _ := pressKey(ps, "s")
+	if ps2.showSpeed {
+		t.Error("showSpeed = true, want false when not playing")
+	}
+}
+
+func TestHandleMain_S_SetsSpeedSelToCurrentSpeed(t *testing.T) {
+	books := []Audiobook{makeBook("h1", DownloadReady, makeChapters(1000), nil)}
+	ps := newPlayerState(makeLib("", books))
+	idx := 0
+	ps.albumPlaying = &idx
+	ps.playerSpeed = 1.5
+	ps2, _ := pressKey(ps, "s")
+	if ps2.speedSel != 3 {
+		t.Errorf("speedSel = %d, want 3 (1.5× is index 3)", ps2.speedSel)
+	}
+}
+
+//  handleSpeed
+
+func TestHandleSpeed_H_DecrementsIdx(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showSpeed = true
+	ps.speedSel = 3
+	ps2, _ := pressKey(ps, "h")
+	if ps2.speedSel != 2 {
+		t.Errorf("speedSel = %d, want 2", ps2.speedSel)
+	}
+}
+
+func TestHandleSpeed_L_IncrementsIdx(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showSpeed = true
+	ps.speedSel = 3
+	ps2, _ := pressKey(ps, "l")
+	if ps2.speedSel != 4 {
+		t.Errorf("speedSel = %d, want 4", ps2.speedSel)
+	}
+}
+
+func TestHandleSpeed_H_AtZero_NoChange(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showSpeed = true
+	ps.speedSel = 0
+	ps2, _ := pressKey(ps, "h")
+	if ps2.speedSel != 0 {
+		t.Errorf("speedSel = %d, want 0 (clamped)", ps2.speedSel)
+	}
+}
+
+func TestHandleSpeed_L_AtMax_NoChange(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showSpeed = true
+	ps.speedSel = len(speedSteps) - 1
+	ps2, _ := pressKey(ps, "l")
+	if ps2.speedSel != len(speedSteps)-1 {
+		t.Errorf("speedSel = %d, want %d (clamped)", ps2.speedSel, len(speedSteps)-1)
+	}
+}
+
+func TestHandleSpeed_Enter_SetsPlayerSpeed(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showSpeed = true
+	ps.speedSel = 4 // 2.0×
+	ps2, _ := pressKey(ps, "enter")
+	if ps2.playerSpeed != 2.0 {
+		t.Errorf("playerSpeed = %v, want 2.0", ps2.playerSpeed)
+	}
+}
+
+func TestHandleSpeed_Enter_ClosesOverlay(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showSpeed = true
+	ps.speedSel = 2
+	ps2, _ := pressKey(ps, "enter")
+	if ps2.showSpeed {
+		t.Error("showSpeed = true, want false after enter")
+	}
+}
+
+func TestHandleSpeed_Esc_ClosesOverlay(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showSpeed = true
+	ps.speedSel = 4
+	ps.playerSpeed = 1.0
+	ps2, _ := pressKey(ps, "esc")
+	if ps2.showSpeed {
+		t.Error("showSpeed = true, want false after esc")
+	}
+	if ps2.playerSpeed != 1.0 {
+		t.Errorf("playerSpeed = %v, want 1.0 (unchanged by esc)", ps2.playerSpeed)
+	}
+}
+
+func TestHandleSpeed_S_ClosesOverlay(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showSpeed = true
+	ps2, _ := pressKey(ps, "s")
+	if ps2.showSpeed {
+		t.Error("showSpeed = true, want false after s (toggle closes)")
+	}
+}
+
+//  handleKey — speed overlay intercept
+
+func TestHandleKey_SpeedOverlay_Intercepts(t *testing.T) {
+	// When showSpeed=true, h should route to handleSpeed (decrement speedSel),
+	// not to handleMain (which would move focus left).
+	books := []Audiobook{makeBook("h1", DownloadReady, makeChapters(1000), nil)}
+	ps := newPlayerState(makeLib("", books))
+	ps.showSpeed = true
+	ps.speedSel = 3
+	ps.onAlbum = false // in chapters panel so h normally moves focus left
+	ps2, _ := pressKey(ps, "h")
+	if ps2.speedSel != 2 {
+		t.Errorf("speedSel = %d, want 2 (handleSpeed intercepted h)", ps2.speedSel)
+	}
+	// focus should not have changed
+	if ps2.onAlbum != false {
+		t.Error("onAlbum should not change while speed overlay is open")
+	}
+}
+
+//  handleKey — helpForMode
+
+func TestHandleKey_QuestionMark_SetsHelpForMode(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeMain
+	ps2, _ := pressKey(ps, "?")
+	if ps2.helpForMode != ModeMain {
+		t.Errorf("helpForMode = %v, want ModeMain", ps2.helpForMode)
 	}
 }

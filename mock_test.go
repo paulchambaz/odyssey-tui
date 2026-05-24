@@ -92,6 +92,10 @@ func pressKey(ps *PlayerState, key string) (*PlayerState, tea.Cmd) {
 		msg = tea.KeyMsg{Type: tea.KeyLeft}
 	case "right":
 		msg = tea.KeyMsg{Type: tea.KeyRight}
+	case "backspace":
+		msg = tea.KeyMsg{Type: tea.KeyBackspace}
+	case "space":
+		msg = tea.KeyMsg{Type: tea.KeySpace}
 	default:
 		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 	}

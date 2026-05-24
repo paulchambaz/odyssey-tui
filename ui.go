@@ -28,9 +28,9 @@ func (ps *PlayerState) View() string {
 	switch ps.mode {
 	case ModeHelp:
 		return ps.renderHelp()
-	case ModePlayer:
-		return ps.renderPlayer()
-}
+	case ModeSearch, ModeSearching:
+		return ps.renderMain()
+	}
 	return ps.renderMain()
 }
 
@@ -145,7 +145,7 @@ func (ps *PlayerState) renderAudiobooksPanel(w, h int) string {
 	inner := w - 2
 	contentH := h - 2
 
-	books := ps.localBooks()
+	books := ps.sortedLocalBooks()
 
 	listH := contentH
 	if ps.albumInfoOpen {
@@ -463,7 +463,7 @@ func (ps *PlayerState) buildBookDetail(b *Audiobook, inner, h int, showChip bool
 func bookChip(b *Audiobook) (string, lipgloss.Color) {
 	switch b.State {
 	case DownloadReady:
-		return "[ready]", colReady
+		return "[downloaded]", colReady
 	case DownloadInProgress:
 		return fmt.Sprintf("[downloading %3d%%]", int(b.DownloadProgress*100)), colPending
 	case DownloadPreparing:
@@ -510,154 +510,7 @@ func wrapText(text string, width int) []string {
 	return lines
 }
 
-//  Player view 
-
-func (ps *PlayerState) renderPlayer() string {
-	if ps.playerBook == nil {
-		return ""
-	}
-	b := ps.playerBook
-	w := ps.windowWidth
-	h := ps.windowHeight - 2
-	inner := w - 2
-	contentH := h - 2
-
-	headerLines := ps.buildPlayerHeader(b, inner)
-	listH := contentH - len(headerLines)
-	if listH < 0 {
-		listH = 0
-	}
-	chapterLines := ps.buildPlayerChapters(b, inner, listH)
-
-	var all []string
-	all = append(all, headerLines...)
-	all = append(all, chapterLines...)
-	for len(all) < contentH {
-		all = append(all, strings.Repeat(" ", inner))
-	}
-
-	content := strings.Join(all, "\n")
-	return renderPanel("Now Playing", w, h, content, false, -1) + "\n" + ps.renderPlayerBar()
-}
-
-func (ps *PlayerState) buildPlayerHeader(b *Audiobook, inner int) []string {
-	var lines []string
-	dim := lipgloss.NewStyle().Foreground(colUnfocus)
-
-	// blank
-	lines = append(lines, "")
-
-	// title + speed
-	speedStr := fmt.Sprintf("x%.2f", ps.playerSpeed)
-	titleW := inner - len(speedStr) - 2
-	title := truncate(b.Title, titleW)
-	titleLine := fmt.Sprintf("  %-*s  %s", titleW, title, dim.Render(speedStr))
-	lines = append(lines, titleLine)
-
-	// author
-	lines = append(lines, "  "+dim.Render(truncate(b.Author, inner-2)))
-
-	// blank
-	lines = append(lines, "")
-
-	// progress bar
-	elapsed := ps.bookElapsed(b)
-	barW := inner - 2 - len(fmtClock(elapsed)) - 3 - len(fmtClock(b.Duration))
-	if barW < 4 {
-		barW = 4
-	}
-	pct := float64(elapsed) / float64(b.Duration)
-	if b.Duration == 0 {
-		pct = 0
-	}
-	bar := progressBar(pct, barW)
-	barLine := fmt.Sprintf("  %s  %s / %s", bar, fmtClock(elapsed), fmtClock(b.Duration))
-	lines = append(lines, barLine)
-
-	// chapter info
-	chIdx := 0
-	if b.Position != nil {
-		chIdx = b.Position.ChapterIndex
-	}
-	remaining := b.Duration - elapsed
-	chInfo := fmt.Sprintf("  %s of %d  ·  %s remaining",
-		chapterLabel(b, chIdx), len(b.Chapters), fmtClock(remaining))
-	lines = append(lines, dim.Render(truncate(chInfo, inner)))
-
-	// blank
-	lines = append(lines, "")
-
-	// chapters sub-header
-	sepLine := "  " + lipgloss.NewStyle().Foreground(colUnfocus).Render(
-		" Chapters "+strings.Repeat("─",max(0, inner-14)),
-	)
-	lines = append(lines, sepLine)
-
-	// blank
-	lines = append(lines, "")
-
-	return lines
-}
-
-func chapterLabel(b *Audiobook, idx int) string {
-	if idx < len(b.Chapters) {
-		return b.Chapters[idx].Title
-	}
-	return fmt.Sprintf("Chapter %d", idx+1)
-}
-
-func (ps *PlayerState) buildPlayerChapters(b *Audiobook, inner, listH int) []string {
-	curCh := -1
-	if b.Position != nil {
-		curCh = b.Position.ChapterIndex
-	}
-
-	durW := 5
-	for _, ch := range b.Chapters {
-		if w := len(fmtMMSS(ch.Duration)); w > durW {
-			durW = w
-		}
-	}
-	// " "(1) + title + " "(1) + dur(durW) + " "(1) = inner
-	titleW := inner - durW - 3
-	if titleW < 0 {
-		titleW = 0
-	}
-
-	var lines []string
-	for i := ps.playerChOff; i < len(b.Chapters) && len(lines) < listH; i++ {
-		ch := b.Chapters[i]
-		isCurrent := i == curCh
-		isSelected := i == ps.playerChSel
-
-		title := truncate(ch.Title, titleW)
-		title = fmt.Sprintf("%-*s", titleW, title)
-		dur := fmt.Sprintf("%*s", durW, fmtMMSS(ch.Duration))
-
-		plain := " " + title + " " + dur
-
-		var style lipgloss.Style
-		switch {
-		case isCurrent && isSelected:
-			style = lipgloss.NewStyle().Reverse(true).Foreground(colPlaying)
-		case isCurrent:
-			style = lipgloss.NewStyle().Foreground(colPlaying)
-		case isSelected:
-			style = lipgloss.NewStyle().Reverse(true).Foreground(colSelected)
-		default:
-			style = lipgloss.NewStyle().Foreground(colUnfocus)
-		}
-
-		lines = append(lines, style.Render(padLine(plain, inner)))
-	}
-
-	for len(lines) < listH {
-		lines = append(lines, strings.Repeat(" ", inner))
-	}
-	return lines
-}
-
-//  Player bar (2 lines) 
+//  Player bar (2 lines)
 
 func (ps *PlayerState) findPlayingBook() *Audiobook {
 	for i := range ps.lib.Books {
@@ -689,12 +542,51 @@ func (ps *PlayerState) buildInfoSection(w int) string {
 	gray := lipgloss.NewStyle().Foreground(colUnfocus)
 	accent := lipgloss.NewStyle().Foreground(colReady)
 
+	if ps.conflictHash != "" {
+		prompt := " Conflict: [y] keep local  [n] take server"
+		return padLine(lipgloss.NewStyle().Foreground(colPending).Render(truncate(prompt, w)), w)
+	}
+
+	if ps.showSpeed {
+		gray := lipgloss.NewStyle().Foreground(colUnfocus)
+		rev := lipgloss.NewStyle().Reverse(true)
+		var sb strings.Builder
+		sb.WriteString(" ")
+		for i, v := range speedSteps {
+			label := fmt.Sprintf("%.2g×", v)
+			if i == ps.speedSel {
+				sb.WriteString(rev.Render(label))
+			} else {
+				sb.WriteString(gray.Render(label))
+			}
+			if i < len(speedSteps)-1 {
+				sb.WriteString(" ")
+			}
+		}
+		return padLine(sb.String(), w)
+	}
+
 	if ps.statusMsg != "" {
 		col := colUnfocus
 		if ps.statusErr {
 			col = colError
 		}
 		return padLine(lipgloss.NewStyle().Foreground(col).Render(" "+truncate(ps.statusMsg, w-1)), w)
+	}
+
+	if ps.mode == ModeSearch {
+		cursor := lipgloss.NewStyle().Foreground(colReady).Render("█")
+		query := truncate(ps.searchQuery, w-3)
+		return padLine(" "+gray.Render("/ "+query)+cursor, w)
+	}
+
+	if ps.mode == ModeSearching {
+		counter := "[0/0] "
+		if len(ps.searchMatches) > 0 {
+			counter = fmt.Sprintf("[%d/%d] ", ps.searchMatchIdx+1, len(ps.searchMatches))
+		}
+		query := truncate(ps.searchQuery, w-3-len(counter))
+		return padLine(" "+accent.Render(counter)+gray.Render("/ "+query), w)
 	}
 
 	b := ps.findPlayingBook()
@@ -805,29 +697,49 @@ func (ps *PlayerState) remainingString() string {
 
 type helpEntry struct{ key, desc string }
 
-func (ps *PlayerState) renderHelp() string {
-	var entries []helpEntry
-	switch ps.returnMode {
-	case ModePlayer:
-		entries = []helpEntry{
-			{"j / k", "scroll chapters"},
-			{"h / l", "seek ±30 s"},
-			{"← / →", "seek ±5 s"},
-			{"space", "play / pause"},
-			{"s", "speed"},
-			{"q", "back"},
-			{"?", "close help"},
-		}
-	default:
-		entries = []helpEntry{
-			{"j / k", "scroll"},
-			{"h / l", "focus panel"},
-			{"d", "toggle library"},
-			{"enter", "play book"},
-			{"q", "quit"},
-			{"?", "close help"},
-		}
+func (ps *PlayerState) helpEntries() []helpEntry {
+	common := []helpEntry{
+		{"?  q  Esc", "close help"},
+		{"Ctrl+C", "force quit"},
 	}
+	switch ps.helpForMode {
+	case ModeMain:
+		return append([]helpEntry{
+			{"j / k / ↑ / ↓", "scroll list"},
+			{"h / l", "move panel focus"},
+			{"d", "toggle library"},
+			{"i", "toggle info pane"},
+			{"I", "focus info pane"},
+			{"Enter", "download / cancel"},
+			{"p", "play selected"},
+			{"Space", "play / pause"},
+			{"s", "speed overlay"},
+			{"x", "delete local book"},
+			{"/", "search albums"},
+			{"r", "refresh from server"},
+			{"q", "quit"},
+			{"Q", "logout + quit"},
+		}, common...)
+	case ModeSearch:
+		return append([]helpEntry{
+			{"printable", "append to query"},
+			{"Backspace", "delete char"},
+			{"Enter", "confirm query"},
+			{"Esc", "cancel search"},
+		}, common...)
+	case ModeSearching:
+		return append([]helpEntry{
+			{"n / p", "next / prev match"},
+			{"/", "re-edit query"},
+			{"Enter", "confirm"},
+			{"Esc", "cancel"},
+		}, common...)
+	}
+	return common
+}
+
+func (ps *PlayerState) renderHelp() string {
+	entries := ps.helpEntries()
 
 	keyW := 12
 	descW := 24
