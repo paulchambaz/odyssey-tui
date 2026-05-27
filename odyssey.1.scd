@@ -1,4 +1,4 @@
-MPCUBE(1) "github.com/paulchambaz/mpcube" "General Commands Manual"
+ODYSSEY(1) "github.com/paulchambaz/odyssey" "General Commands Manual"
 
 # NAME
 
@@ -23,5 +23,5 @@ MPCUBE(1) "github.com/paulchambaz/mpcube" "General Commands Manual"
 
 # AUTHORS
 
-This program was written by Paul Chambaz in 2024. It is licensed under the
+This program was written by Paul Chambaz in 2026. It is licensed under the
 GPLv3, for more information, please read the *LICENSE* file.
