@@ -30,15 +30,16 @@
       in
       {
         packages.default = pkgs.buildGoModule {
-          pname = "odyssey-tui";
+          pname = "odyssey";
           version = "1.0.0";
           src = ./.;
-          vendorHash = "";
+          vendorHash = "sha256-PrDlkEswRpF32GEKHjPmgCL6B8kwC+e5p2YV0y0sAZc=";
           nativeBuildInputs = buildPkgs;
           buildInputs = libPkgs;
           postInstall = ''
+            mv $out/bin/odyssey-tui $out/bin/odyssey
             mkdir -p $out/share/man/man1
-            scdoc < odyssey-tui.1.scd | sed "s/1980-01-01/$(date '+%B %Y')/" > odyssey-tui.1
+            scdoc < odyssey.1.scd | sed "s/1980-01-01/$(date '+%B %Y')/" > $out/share/man/man1/odyssey.1
           '';
         };
         devShell = pkgs.mkShell {
