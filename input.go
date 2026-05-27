@@ -259,9 +259,70 @@ func (ps *PlayerState) handleMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			ps.libOffset = clampOffset(ps.libOffset, ps.libSel, ps.libListH(), 2, len(ps.lib.Books))
 		}
 
+	case "g":
+		switch {
+		case ps.libActive:
+			ps.libSel = 0
+			ps.libOffset = 0
+			ps.libInfoOff = 0
+		case ps.onAlbum:
+			ps.albumSelected = 0
+			ps.albumOffset = 0
+			ps.albumInfoOff = 0
+			ps.trackSelected = 0
+			ps.trackOffset = 0
+			if len(books) > 0 && books[0].Position != nil {
+				ps.trackSelected = books[0].Position.ChapterIndex
+			}
+		default:
+			ps.trackSelected = 0
+			ps.trackOffset = 0
+		}
+
+	case "G":
+		switch {
+		case ps.libActive:
+			if n := len(ps.lib.Books); n > 0 {
+				ps.libSel = n - 1
+				ps.libOffset = clampOffset(ps.libOffset, ps.libSel, ps.libListH(), 2, n)
+			}
+			ps.libInfoOff = 0
+		case ps.onAlbum:
+			if len(books) > 0 {
+				ps.albumSelected = len(books) - 1
+				ps.albumOffset = clampOffset(ps.albumOffset, ps.albumSelected, ps.abPanelInnerH(), 2, len(books))
+				ps.albumInfoOff = 0
+				if b := books[ps.albumSelected]; b.Position != nil {
+					ps.trackSelected = b.Position.ChapterIndex
+				}
+			}
+		default:
+			if b := ps.selectedLocalBook(); b != nil && len(b.Chapters) > 0 {
+				ps.trackSelected = len(b.Chapters) - 1
+				ps.trackOffset = clampOffset(ps.trackOffset, ps.trackSelected, ps.abPanelInnerH(), 2, len(b.Chapters))
+			}
+		}
+
+	case "D":
+		if ps.libActive && len(ps.lib.Books) > 0 && ps.store != nil {
+			b := &ps.lib.Books[ps.libSel]
+			if b.State == DownloadReady {
+				logf("KEY", "delete local book from lib hash=%s title=%q", b.Hash, b.Title)
+				hash := b.Hash
+				b.State = DownloadRemote
+				b.Chapters = nil
+				return ps, deleteLocalBookCmd(ps.store, hash)
+			}
+		}
+
 	case "I":
 		if ps.libActive && ps.libInfoOpen {
 			ps.libInfoFocused = !ps.libInfoFocused
+			if ps.libInfoFocused && ps.api != nil && len(ps.lib.Books) > 0 {
+				hash := ps.lib.Books[ps.libSel].Hash
+				logf("KEY", "fetch audiobook detail hash=%s", hash)
+				return ps, fetchAudiobookDetailCmd(ps.api, hash)
+			}
 		} else if ps.onAlbum && !ps.libActive && ps.albumInfoOpen {
 			ps.albumInfoFocused = !ps.albumInfoFocused
 		}

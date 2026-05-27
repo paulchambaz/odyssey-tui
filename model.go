@@ -63,6 +63,11 @@ type downloadDoneMsg struct {
 type syncDoneMsg struct{ err error }
 type syncQuitMsg struct{}
 
+type audiobookDetailMsg struct {
+	book Audiobook
+	err  error
+}
+
 type positionSavedMsg struct {
 	hash string
 	pos  Position
@@ -422,6 +427,11 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		sortLibraryBooks(ps.lib.Books)
+		if n := len(ps.lib.Books); n > 0 && ps.libSel >= n {
+			ps.libSel = n - 1
+		}
+		ps.libOffset = clampOffset(ps.libOffset, ps.libSel, ps.libListH(), 2, len(ps.lib.Books))
 		return ps, nil
 	case cachedLocalBooksMsg:
 		if ps.localByHash != nil {
@@ -443,6 +453,7 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		sortLibraryBooks(ps.lib.Books)
 		return ps, nil
 	case localBooksMsg:
 		logf("MSG", "localBooks count=%d", len(msg.books))
@@ -466,6 +477,11 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		sortLibraryBooks(ps.lib.Books)
+		if n := len(ps.lib.Books); n > 0 && ps.libSel >= n {
+			ps.libSel = n - 1
+		}
+		ps.libOffset = clampOffset(ps.libOffset, ps.libSel, ps.libListH(), 2, len(ps.lib.Books))
 		if msg.times != nil {
 			ps.downloadTimes = msg.times
 		}
@@ -709,6 +725,25 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case syncQuitMsg:
 		return ps, tea.Quit
 
+	case audiobookDetailMsg:
+		if msg.err != nil {
+			logf("MSG", "audiobookDetail err=%v", msg.err)
+			return ps, nil
+		}
+		logf("MSG", "audiobookDetail hash=%s title=%q", msg.book.Hash, msg.book.Title)
+		for i := range ps.lib.Books {
+			if ps.lib.Books[i].Hash == msg.book.Hash {
+				if msg.book.Description != "" {
+					ps.lib.Books[i].Description = msg.book.Description
+				}
+				if len(msg.book.Genres) > 0 {
+					ps.lib.Books[i].Genres = msg.book.Genres
+				}
+				break
+			}
+		}
+		return ps, nil
+
 	}
 	return ps, nil
 }
@@ -828,6 +863,13 @@ func fetchAndSavePositionCmd(api ApiClient, store *Store, hash string) tea.Cmd {
 	}
 }
 
+
+func fetchAudiobookDetailCmd(api ApiClient, hash string) tea.Cmd {
+	return func() tea.Msg {
+		book, err := api.GetAudiobook(hash)
+		return audiobookDetailMsg{book: book, err: err}
+	}
+}
 
 func fetchPositionAndPlayCmd(api ApiClient, hash string) tea.Cmd {
 	return func() tea.Msg {

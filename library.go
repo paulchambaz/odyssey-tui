@@ -75,10 +75,24 @@ func loadLibrary(path string) (*Library, error) {
 			lib.Books[i].State = DownloadRemote
 		}
 	}
-	sort.SliceStable(lib.Books, func(a, b int) bool {
-		return libSortKey(lib.Books[a]) < libSortKey(lib.Books[b])
-	})
+	sortLibraryBooks(lib.Books)
 	return &lib, nil
+}
+
+func sortLibraryBooks(books []Audiobook) {
+	sort.SliceStable(books, func(a, b int) bool {
+		ka, kb := libSortKey(books[a]), libSortKey(books[b])
+		if ka != kb {
+			return ka < kb
+		}
+		if books[a].Author != books[b].Author {
+			return books[a].Author < books[b].Author
+		}
+		if books[a].Date != books[b].Date {
+			return books[a].Date < books[b].Date
+		}
+		return books[a].Title < books[b].Title
+	})
 }
 
 func libSortKey(b Audiobook) int {

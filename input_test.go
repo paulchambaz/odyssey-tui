@@ -598,6 +598,81 @@ func TestHandleMain_ShiftI_TogglesAlbumInfoFocused(t *testing.T) {
 	}
 }
 
+func TestHandleMain_ShiftI_LibActive_FiresFetchDetail(t *testing.T) {
+	book := makeBook("abc", DownloadRemote, nil, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.libActive = true
+	ps.libInfoOpen = true
+	ps.libInfoFocused = false
+	ps.api = &MockApiClient{
+		GetAudiobookFn: func(hash string) (Audiobook, error) {
+			return Audiobook{Hash: hash, Description: "fetched desc"}, nil
+		},
+	}
+	_, cmd := pressKey(ps, "I")
+	if cmd == nil {
+		t.Fatal("I in lib with api should return a fetch cmd")
+	}
+	msg := cmd()
+	detail, ok := msg.(audiobookDetailMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want audiobookDetailMsg", msg)
+	}
+	if detail.err != nil {
+		t.Fatalf("unexpected error: %v", detail.err)
+	}
+	if detail.book.Description != "fetched desc" {
+		t.Errorf("description = %q, want %q", detail.book.Description, "fetched desc")
+	}
+}
+
+func TestHandleMain_ShiftI_LibActive_NoApiNoCmd(t *testing.T) {
+	book := makeBook("abc", DownloadRemote, nil, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.libActive = true
+	ps.libInfoOpen = true
+	ps.libInfoFocused = false
+	_, cmd := pressKey(ps, "I")
+	if cmd != nil {
+		t.Error("I without api should return nil cmd")
+	}
+}
+
+func TestUpdate_AudiobookDetailMsg_UpdatesDescription(t *testing.T) {
+	book := makeBook("abc", DownloadRemote, nil, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	msg := audiobookDetailMsg{book: Audiobook{Hash: "abc", Description: "new desc", Genres: []string{"sci-fi"}}}
+	model, _ := ps.Update(msg)
+	ps2 := model.(*PlayerState)
+	var found bool
+	for _, b := range ps2.lib.Books {
+		if b.Hash == "abc" {
+			found = true
+			if b.Description != "new desc" {
+				t.Errorf("description = %q, want %q", b.Description, "new desc")
+			}
+			if len(b.Genres) == 0 || b.Genres[0] != "sci-fi" {
+				t.Errorf("genres = %v, want [sci-fi]", b.Genres)
+			}
+		}
+	}
+	if !found {
+		t.Error("book not found in lib after update")
+	}
+}
+
+func TestUpdate_AudiobookDetailMsg_ErrorIsNoop(t *testing.T) {
+	book := makeBook("abc", DownloadRemote, nil, nil)
+	book.Description = "original"
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	msg := audiobookDetailMsg{err: context.Canceled}
+	model, _ := ps.Update(msg)
+	ps2 := model.(*PlayerState)
+	if ps2.lib.Books[0].Description != "original" {
+		t.Error("error msg should leave description unchanged")
+	}
+}
+
 func TestHandleMain_LowI_TogglesLibInfoOpen(t *testing.T) {
 	ps := newPlayerState(makeLib("", nil))
 	ps.libActive = true
@@ -1439,5 +1514,225 @@ func TestHandleKey_QuestionMark_SetsHelpForMode(t *testing.T) {
 	ps2, _ := pressKey(ps, "?")
 	if ps2.helpForMode != ModeMain {
 		t.Errorf("helpForMode = %v, want ModeMain", ps2.helpForMode)
+	}
+}
+
+//  handleMain — g/G navigation
+
+func TestHandleMain_G_LibJumpsToTop(t *testing.T) {
+	books := []Audiobook{
+		makeBook("a", DownloadRemote, nil, nil),
+		makeBook("b", DownloadRemote, nil, nil),
+		makeBook("c", DownloadRemote, nil, nil),
+	}
+	ps := newPlayerState(makeLib("", books))
+	ps.libActive = true
+	ps.libSel = 2
+	ps.libOffset = 1
+	ps2, _ := pressKey(ps, "g")
+	if ps2.libSel != 0 {
+		t.Errorf("libSel = %d, want 0", ps2.libSel)
+	}
+	if ps2.libOffset != 0 {
+		t.Errorf("libOffset = %d, want 0", ps2.libOffset)
+	}
+}
+
+func TestHandleMain_ShiftG_LibJumpsToBottom(t *testing.T) {
+	books := []Audiobook{
+		makeBook("a", DownloadRemote, nil, nil),
+		makeBook("b", DownloadRemote, nil, nil),
+		makeBook("c", DownloadRemote, nil, nil),
+	}
+	ps := newPlayerState(makeLib("", books))
+	ps.libActive = true
+	ps.libSel = 0
+	ps.windowHeight = 40
+	ps2, _ := pressKey(ps, "G")
+	if ps2.libSel != 2 {
+		t.Errorf("libSel = %d, want 2", ps2.libSel)
+	}
+}
+
+func TestHandleMain_G_AlbumsJumpsToTop(t *testing.T) {
+	chs := makeChapters(1000, 2000)
+	books := []Audiobook{
+		makeBook("a", DownloadReady, chs, nil),
+		makeBook("b", DownloadReady, chs, nil),
+	}
+	ps := newPlayerState(makeLib("", books))
+	ps.onAlbum = true
+	ps.albumSelected = 1
+	ps.albumOffset = 1
+	ps2, _ := pressKey(ps, "g")
+	if ps2.albumSelected != 0 {
+		t.Errorf("albumSelected = %d, want 0", ps2.albumSelected)
+	}
+	if ps2.albumOffset != 0 {
+		t.Errorf("albumOffset = %d, want 0", ps2.albumOffset)
+	}
+}
+
+func TestHandleMain_ShiftG_AlbumsJumpsToBottom(t *testing.T) {
+	chs := makeChapters(1000, 2000)
+	books := []Audiobook{
+		makeBook("a", DownloadReady, chs, nil),
+		makeBook("b", DownloadReady, chs, nil),
+	}
+	ps := newPlayerState(makeLib("", books))
+	ps.onAlbum = true
+	ps.albumSelected = 0
+	ps.windowHeight = 40
+	ps2, _ := pressKey(ps, "G")
+	if ps2.albumSelected != 1 {
+		t.Errorf("albumSelected = %d, want 1", ps2.albumSelected)
+	}
+}
+
+func TestHandleMain_G_ChaptersJumpsToTop(t *testing.T) {
+	chs := makeChapters(1000, 2000, 3000)
+	book := makeBook("a", DownloadReady, chs, &Position{ChapterIndex: 2})
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.onAlbum = false
+	ps.trackSelected = 2
+	ps.trackOffset = 1
+	ps2, _ := pressKey(ps, "g")
+	if ps2.trackSelected != 0 {
+		t.Errorf("trackSelected = %d, want 0", ps2.trackSelected)
+	}
+	if ps2.trackOffset != 0 {
+		t.Errorf("trackOffset = %d, want 0", ps2.trackOffset)
+	}
+}
+
+func TestHandleMain_ShiftG_ChaptersJumpsToBottom(t *testing.T) {
+	chs := makeChapters(1000, 2000, 3000)
+	book := makeBook("a", DownloadReady, chs, &Position{ChapterIndex: 0})
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.onAlbum = false
+	ps.trackSelected = 0
+	ps.windowHeight = 40
+	ps2, _ := pressKey(ps, "G")
+	if ps2.trackSelected != 2 {
+		t.Errorf("trackSelected = %d, want 2", ps2.trackSelected)
+	}
+}
+
+//  handleMain — D delete from library
+
+func TestHandleMain_ShiftD_DeletesReadyBookFromLib(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.libActive = true
+	ps.libSel = 0
+	ps.store = newTestStore(t)
+	ps2, cmd := pressKey(ps, "D")
+	if ps2.lib.Books[0].State != DownloadRemote {
+		t.Error("D should immediately set state to DownloadRemote")
+	}
+	if cmd == nil {
+		t.Error("D on ready book should return non-nil cmd")
+	}
+}
+
+func TestHandleMain_ShiftD_NoopWhenRemote(t *testing.T) {
+	book := makeBook("a", DownloadRemote, nil, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.libActive = true
+	ps.libSel = 0
+	ps.store = newTestStore(t)
+	_, cmd := pressKey(ps, "D")
+	if cmd != nil {
+		t.Error("D on non-ready book should return nil cmd")
+	}
+}
+
+func TestHandleMain_ShiftD_NoopWhenNotLibActive(t *testing.T) {
+	book := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.libActive = false
+	ps.onAlbum = true
+	ps.store = newTestStore(t)
+	_, cmd := pressKey(ps, "D")
+	if cmd != nil {
+		t.Error("D outside library should return nil cmd")
+	}
+}
+
+func TestHandleMain_ShiftD_CmdDeletesDirectory(t *testing.T) {
+	s := newTestStore(t)
+	bookDir := filepath.Join(s.dataDir, "library", "a")
+	os.MkdirAll(bookDir, 0755)
+	book := makeBook("a", DownloadReady, makeChapters(1000), nil)
+	ps := newPlayerState(makeLib("", []Audiobook{book}))
+	ps.libActive = true
+	ps.libSel = 0
+	ps.store = s
+	_, cmd := pressKey(ps, "D")
+	if cmd == nil {
+		t.Fatal("D should return non-nil cmd")
+	}
+	cmd()
+	if _, err := os.Stat(bookDir); !os.IsNotExist(err) {
+		t.Error("D cmd should delete the book directory")
+	}
+}
+
+//  sortLibraryBooks
+
+func TestSortLibraryBooks_ReadyLast(t *testing.T) {
+	books := []Audiobook{
+		{Hash: "ready", Author: "Z", State: DownloadReady},
+		{Hash: "remote", Author: "A", State: DownloadRemote},
+		{Hash: "inprog", Author: "B", State: DownloadInProgress},
+	}
+	sortLibraryBooks(books)
+	if books[0].Hash != "inprog" {
+		t.Errorf("[0] = %s, want inprog", books[0].Hash)
+	}
+	if books[1].Hash != "remote" {
+		t.Errorf("[1] = %s, want remote", books[1].Hash)
+	}
+	if books[2].Hash != "ready" {
+		t.Errorf("[2] = %s, want ready", books[2].Hash)
+	}
+}
+
+func TestSortLibraryBooks_WithinGroupByAuthorDateTitle(t *testing.T) {
+	books := []Audiobook{
+		{Hash: "c", Author: "B", Date: 2000, Title: "Z", State: DownloadRemote},
+		{Hash: "a", Author: "A", Date: 2000, Title: "Z", State: DownloadRemote},
+		{Hash: "b", Author: "B", Date: 1990, Title: "Z", State: DownloadRemote},
+		{Hash: "d", Author: "B", Date: 2000, Title: "A", State: DownloadRemote},
+	}
+	sortLibraryBooks(books)
+	order := make([]string, len(books))
+	for i, b := range books {
+		order[i] = b.Hash
+	}
+	// A first, then B/1990, then B/2000/A, then B/2000/Z
+	want := []string{"a", "b", "d", "c"}
+	for i, h := range want {
+		if order[i] != h {
+			t.Errorf("position %d = %s, want %s (order=%v)", i, order[i], h, order)
+			break
+		}
+	}
+}
+
+func TestUpdate_BooksResultMsg_SortsReadyLast(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	books := []Audiobook{
+		{Hash: "ready", Author: "A", State: DownloadReady},
+		{Hash: "remote", Author: "B", State: DownloadRemote},
+	}
+	msg := booksResultMsg{books: books}
+	model, _ := ps.Update(msg)
+	ps2 := model.(*PlayerState)
+	if ps2.lib.Books[0].Hash != "remote" {
+		t.Errorf("[0] = %s, want remote", ps2.lib.Books[0].Hash)
+	}
+	if ps2.lib.Books[1].Hash != "ready" {
+		t.Errorf("[1] = %s, want ready", ps2.lib.Books[1].Hash)
 	}
 }
