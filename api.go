@@ -54,6 +54,7 @@ func NewIliadApi(creds Credentials) *IliadApi {
 }
 
 func (a *IliadApi) Login(baseURL, user, pass string) (string, error) {
+	logf("API", "Login url=%s user=%s", baseURL, user)
 	payload, _ := json.Marshal(map[string]string{"username": user, "password": pass})
 	req, err := http.NewRequest("POST", baseURL+"/auth/login", bytes.NewReader(payload))
 	if err != nil {
@@ -63,14 +64,17 @@ func (a *IliadApi) Login(baseURL, user, pass string) (string, error) {
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
+		logf("API", "Login error: %v", err)
 		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 401 {
+		logf("API", "Login -> 401 auth error")
 		return "", &AuthError{}
 	}
 	if resp.StatusCode != 200 {
+		logf("API", "Login -> HTTP %d", resp.StatusCode)
 		return "", fmt.Errorf("login failed: HTTP %d", resp.StatusCode)
 	}
 
@@ -80,6 +84,7 @@ func (a *IliadApi) Login(baseURL, user, pass string) (string, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
+	logf("API", "Login -> ok")
 	return result.Token, nil
 }
 
@@ -117,6 +122,7 @@ func (a *IliadApi) Register(baseURL, user, pass string) (string, error) {
 }
 
 func (a *IliadApi) GetAudiobooks() ([]Audiobook, error) {
+	logf("API", "GetAudiobooks")
 	req, err := http.NewRequest("GET", a.creds.BaseURL+"/audiobooks", nil)
 	if err != nil {
 		return nil, err
@@ -124,6 +130,7 @@ func (a *IliadApi) GetAudiobooks() ([]Audiobook, error) {
 
 	resp, err := a.execute(req)
 	if err != nil {
+		logf("API", "GetAudiobooks error: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -135,10 +142,12 @@ func (a *IliadApi) GetAudiobooks() ([]Audiobook, error) {
 	for i := range books {
 		books[i].Duration *= 1000
 	}
+	logf("API", "GetAudiobooks -> %d books", len(books))
 	return books, nil
 }
 
 func (a *IliadApi) GetAudiobook(hash string) (Audiobook, error) {
+	logf("API", "GetAudiobook hash=%s", hash)
 	req, err := http.NewRequest("GET", a.creds.BaseURL+"/audiobooks/"+hash, nil)
 	if err != nil {
 		return Audiobook{}, err
@@ -146,6 +155,7 @@ func (a *IliadApi) GetAudiobook(hash string) (Audiobook, error) {
 
 	resp, err := a.execute(req)
 	if err != nil {
+		logf("API", "GetAudiobook error hash=%s: %v", hash, err)
 		return Audiobook{}, err
 	}
 	defer resp.Body.Close()
@@ -154,12 +164,14 @@ func (a *IliadApi) GetAudiobook(hash string) (Audiobook, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&book); err != nil {
 		return Audiobook{}, err
 	}
+	logf("API", "GetAudiobook -> title=%q archiveReady=%v", book.Title, book.ArchiveReady)
 	return book, nil
 }
 
 // DownloadAudiobook streams hash's archive to dest, resuming from startByte if > 0.
 // onProgress is called after each chunk with (bytesReceived, totalBytes); total is -1 if unknown.
 func (a *IliadApi) DownloadAudiobook(hash, dest string, startByte int64, onProgress func(received, total int64)) error {
+	logf("API", "DownloadAudiobook hash=%s dest=%s resume=%d", hash, dest, startByte)
 	ctx, cancel := context.WithCancel(context.Background())
 	if a.cancelDL != nil {
 		a.cancelDL()
@@ -238,6 +250,7 @@ func (a *IliadApi) CancelDownload() {
 }
 
 func (a *IliadApi) GetPosition(hash string) (Position, error) {
+	logf("API", "GetPosition hash=%s", hash)
 	req, err := http.NewRequest("GET", a.creds.BaseURL+"/positions/"+hash, nil)
 	if err != nil {
 		return Position{}, err
@@ -245,6 +258,7 @@ func (a *IliadApi) GetPosition(hash string) (Position, error) {
 
 	resp, err := a.execute(req)
 	if err != nil {
+		logf("API", "GetPosition error hash=%s: %v", hash, err)
 		return Position{}, err
 	}
 	defer resp.Body.Close()
@@ -253,10 +267,12 @@ func (a *IliadApi) GetPosition(hash string) (Position, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&pos); err != nil {
 		return Position{}, err
 	}
+	logf("API", "GetPosition -> ch=%d pos=%dms ts=%d", pos.ChapterIndex, pos.ChapterPosition, pos.Timestamp)
 	return pos, nil
 }
 
 func (a *IliadApi) PutPosition(hash string, pos Position) error {
+	logf("API", "PutPosition hash=%s ch=%d pos=%dms", hash, pos.ChapterIndex, pos.ChapterPosition)
 	data, err := json.Marshal(pos)
 	if err != nil {
 		return err
@@ -311,6 +327,7 @@ func (a *IliadApi) execute(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	if resp.StatusCode == 401 {
+		logf("API", "execute second 401 -> AuthError")
 		resp.Body.Close()
 		return nil, &AuthError{}
 	}
@@ -318,10 +335,13 @@ func (a *IliadApi) execute(req *http.Request) (*http.Response, error) {
 }
 
 func (a *IliadApi) reauth() error {
+	logf("API", "reauth user=%s", a.creds.Username)
 	token, err := a.Login(a.creds.BaseURL, a.creds.Username, a.creds.Password)
 	if err != nil {
+		logf("API", "reauth failed: %v", err)
 		return err
 	}
+	logf("API", "reauth -> token updated")
 	a.creds.Token = token
 	return nil
 }

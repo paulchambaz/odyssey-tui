@@ -61,7 +61,11 @@ func NewStore() (*Store, error) {
 	return s, nil
 }
 
-//  low-level helpers 
+func (s *Store) LogPath() string {
+	return filepath.Join(s.dataDir, "odyssey-tui.log")
+}
+
+//  low-level helpers
 
 func saveJSON(path string, v any) error {
 	data, err := json.Marshal(v)

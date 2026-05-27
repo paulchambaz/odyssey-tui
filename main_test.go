@@ -47,7 +47,7 @@ func TestParseArgsUnknownCommand(t *testing.T) {
 }
 
 func TestParseArgsConfigFlag(t *testing.T) {
-	got, err := parseArgs([]string{"--config", "odyssey.cfg"})
+	got, err := parseArgs([]string{"-config", "odyssey.cfg"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestParseArgsConfigFlag(t *testing.T) {
 }
 
 func TestParseArgsConfigWithCommand(t *testing.T) {
-	got, err := parseArgs([]string{"--config", "odyssey.cfg", "login"})
+	got, err := parseArgs([]string{"-config", "odyssey.cfg", "login"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,9 +73,9 @@ func TestParseArgsConfigWithCommand(t *testing.T) {
 }
 
 func TestParseArgsConfigMissingValue(t *testing.T) {
-	_, err := parseArgs([]string{"--config"})
+	_, err := parseArgs([]string{"-config"})
 	if err == nil {
-		t.Fatal("expected error when --config has no value")
+		t.Fatal("expected error when -config has no value")
 	}
 }
 
@@ -87,7 +87,7 @@ func TestParseArgsUnknownFlag(t *testing.T) {
 }
 
 func TestParseArgsRegisterFlag(t *testing.T) {
-	got, err := parseArgs([]string{"--register", "login"})
+	got, err := parseArgs([]string{"-register", "login"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

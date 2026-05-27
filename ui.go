@@ -533,8 +533,14 @@ func (ps *PlayerState) renderPlayerBar() string {
 	progressW := ps.windowWidth - volumeW - speedW
 
 	gray := lipgloss.NewStyle().Foreground(colUnfocus)
+	var speedRendered string
+	if ps.playerSpeed != 1.0 {
+		speedRendered = lipgloss.NewStyle().Foreground(colReady).Bold(true).Render(speedStr)
+	} else {
+		speedRendered = gray.Render(speedStr)
+	}
 	line1 := ps.buildInfoSection(infoW) + gray.Render(remStr)
-	line2 := ps.buildVolumeSection(volumeW) + ps.buildProgressSection(progressW) + gray.Render(speedStr)
+	line2 := ps.buildVolumeSection(volumeW) + ps.buildProgressSection(progressW) + speedRendered
 	return line1 + "\n" + line2
 }
 
@@ -545,25 +551,6 @@ func (ps *PlayerState) buildInfoSection(w int) string {
 	if ps.conflictHash != "" {
 		prompt := " Conflict: [y] keep local  [n] take server"
 		return padLine(lipgloss.NewStyle().Foreground(colPending).Render(truncate(prompt, w)), w)
-	}
-
-	if ps.showSpeed {
-		gray := lipgloss.NewStyle().Foreground(colUnfocus)
-		rev := lipgloss.NewStyle().Reverse(true)
-		var sb strings.Builder
-		sb.WriteString(" ")
-		for i, v := range speedSteps {
-			label := fmt.Sprintf("%.2g×", v)
-			if i == ps.speedSel {
-				sb.WriteString(rev.Render(label))
-			} else {
-				sb.WriteString(gray.Render(label))
-			}
-			if i < len(speedSteps)-1 {
-				sb.WriteString(" ")
-			}
-		}
-		return padLine(sb.String(), w)
 	}
 
 	if ps.statusMsg != "" {
@@ -591,7 +578,7 @@ func (ps *PlayerState) buildInfoSection(w int) string {
 
 	b := ps.findPlayingBook()
 	if b == nil || b.Position == nil {
-		return strings.Repeat(" ", w)
+		return padLine(gray.Render(" Not playing"), w)
 	}
 
 	playingLabel := "Playing"
@@ -626,7 +613,7 @@ func (ps *PlayerState) buildInfoSection(w int) string {
 func (ps *PlayerState) buildVolumeSection(w int) string {
 	gray := lipgloss.NewStyle().Foreground(colUnfocus)
 	prefix := " Vol "
-	suffix := fmt.Sprintf(" %3d%%", ps.playerVolume)
+	suffix := fmt.Sprintf(" %d%%", ps.playerVolume)
 	barW := w - len(prefix) - len(suffix)
 	if barW < 1 {
 		return gray.Render(strings.Repeat(" ", w))
@@ -643,9 +630,12 @@ func (ps *PlayerState) buildProgressSection(w int) string {
 	gray := lipgloss.NewStyle().Foreground(colUnfocus)
 	b := ps.findPlayingBook()
 	var elapsed, total int64
-	if b != nil {
-		elapsed = ps.bookElapsed(b)
-		total = b.Duration
+	if b != nil && b.Position != nil {
+		chIdx := b.Position.ChapterIndex
+		elapsed = b.Position.ChapterPosition
+		if chIdx < len(b.Chapters) {
+			total = b.Chapters[chIdx].Duration
+		}
 	}
 	// use same width for both timestamps so the bar is stable
 	tClock := fmtClock(total)
@@ -713,7 +703,7 @@ func (ps *PlayerState) helpEntries() []helpEntry {
 			{"Enter", "download / cancel"},
 			{"p", "play selected"},
 			{"Space", "play / pause"},
-			{"s", "speed overlay"},
+			{"s", "cycle speed"},
 			{"x", "delete local book"},
 			{"/", "search albums"},
 			{"r", "refresh from server"},

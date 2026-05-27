@@ -64,6 +64,27 @@ func absInt64(n int64) int64 {
 	return n
 }
 
+// waitUntilStable polls getPositionMs until two consecutive reads are within
+// 20ms — i.e. position is no longer advancing (pause took effect).
+func waitUntilStable(t *testing.T, p *mpvPlayer) int64 {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	prev := int64(-1)
+	for time.Now().Before(deadline) {
+		time.Sleep(30 * time.Millisecond)
+		pos, err := p.getPositionMs()
+		if err != nil {
+			t.Fatalf("getPositionMs: %v", err)
+		}
+		if prev >= 0 && absInt64(pos-prev) < 20 {
+			return pos
+		}
+		prev = pos
+	}
+	t.Fatal("position did not stabilize within 1s after pause")
+	return 0
+}
+
 //  TestNewMpvPlayer_SpawnsAndConnects 
 
 func TestNewMpvPlayer_SpawnsAndConnects(t *testing.T) {
@@ -156,11 +177,7 @@ func TestPause_StopsAdvancement(t *testing.T) {
 	if err := p.pause(); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond) // let pause settle
-	pos1, err := p.getPositionMs()
-	if err != nil {
-		t.Fatalf("getPositionMs: %v", err)
-	}
+	pos1 := waitUntilStable(t, p)
 	time.Sleep(400 * time.Millisecond)
 	pos2, err := p.getPositionMs()
 	if err != nil {

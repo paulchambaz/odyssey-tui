@@ -44,8 +44,10 @@ func newMpvPlayer() (*mpvPlayer, error) {
 		"--input-ipc-server="+sockPath,
 	)
 	if err := cmd.Start(); err != nil {
+		logf("PLAYER", "spawn mpv failed: %v", err)
 		return nil, fmt.Errorf("spawn mpv: %w", err)
 	}
+	logf("PLAYER", "mpv spawned pid=%d sock=%s", cmd.Process.Pid, sockPath)
 	var (
 		conn net.Conn
 		err  error
@@ -58,10 +60,12 @@ func newMpvPlayer() (*mpvPlayer, error) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if err != nil {
+		logf("PLAYER", "connect to mpv socket failed: %v", err)
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("connect to mpv socket: %w", err)
 	}
+	logf("PLAYER", "mpv socket connected")
 	return &mpvPlayer{
 		cmd:      cmd,
 		conn:     conn,
@@ -111,77 +115,104 @@ func (m *mpvPlayer) sendCommand(args []any) (mpvResponse, error) {
 //  control commands 
 
 func (m *mpvPlayer) loadFile(path string, seekMs int64) error {
-	resp, err := m.sendCommand([]any{"loadfile", path, "replace"})
+	logf("PLAYER", "loadFile path=%s seekMs=%d", path, seekMs)
+	var args []any
+	if seekMs > 0 {
+		args = []any{"loadfile", path, "replace", 0, fmt.Sprintf("start=%f", float64(seekMs)/1000.0)}
+	} else {
+		args = []any{"loadfile", path, "replace"}
+	}
+	resp, err := m.sendCommand(args)
 	if err != nil {
+		logf("PLAYER", "loadFile error: %v", err)
 		return err
 	}
 	if resp.Error != "success" {
+		logf("PLAYER", "loadFile mpv error: %s", resp.Error)
 		return fmt.Errorf("mpv: %s", resp.Error)
-	}
-	if seekMs > 0 {
-		// Poll until duration is available (file demuxed), then seek.
-		deadline := time.Now().Add(500 * time.Millisecond)
-		for time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-			if dur, err := m.getDurationMs(); err == nil && dur > 0 {
-				break
-			}
-		}
-		_ = m.seekTo(seekMs)
 	}
 	return nil
 }
 
 func (m *mpvPlayer) play() error {
+	logf("PLAYER", "play")
 	resp, err := m.sendCommand([]any{"set_property", "pause", false})
 	if err != nil {
+		logf("PLAYER", "play error: %v", err)
 		return err
 	}
 	if resp.Error != "success" {
+		logf("PLAYER", "play mpv error: %s", resp.Error)
 		return fmt.Errorf("mpv: %s", resp.Error)
 	}
 	return nil
 }
 
 func (m *mpvPlayer) pause() error {
+	logf("PLAYER", "pause")
 	resp, err := m.sendCommand([]any{"set_property", "pause", true})
 	if err != nil {
+		logf("PLAYER", "pause error: %v", err)
 		return err
 	}
 	if resp.Error != "success" {
+		logf("PLAYER", "pause mpv error: %s", resp.Error)
 		return fmt.Errorf("mpv: %s", resp.Error)
 	}
 	return nil
 }
 
 func (m *mpvPlayer) seekTo(ms int64) error {
+	logf("PLAYER", "seekTo ms=%d", ms)
 	resp, err := m.sendCommand([]any{"seek", float64(ms) / 1000.0, "absolute"})
 	if err != nil {
+		logf("PLAYER", "seekTo error: %v", err)
 		return err
 	}
 	if resp.Error != "success" {
+		logf("PLAYER", "seekTo mpv error: %s", resp.Error)
+		return fmt.Errorf("mpv: %s", resp.Error)
+	}
+	return nil
+}
+
+func (m *mpvPlayer) seekRelative(ms int64) error {
+	logf("PLAYER", "seekRelative ms=%d", ms)
+	resp, err := m.sendCommand([]any{"seek", float64(ms) / 1000.0, "relative"})
+	if err != nil {
+		logf("PLAYER", "seekRelative error: %v", err)
+		return err
+	}
+	if resp.Error != "success" {
+		logf("PLAYER", "seekRelative mpv error: %s", resp.Error)
 		return fmt.Errorf("mpv: %s", resp.Error)
 	}
 	return nil
 }
 
 func (m *mpvPlayer) setSpeed(s float64) error {
+	logf("PLAYER", "setSpeed %.2f", s)
 	resp, err := m.sendCommand([]any{"set_property", "speed", s})
 	if err != nil {
+		logf("PLAYER", "setSpeed error: %v", err)
 		return err
 	}
 	if resp.Error != "success" {
+		logf("PLAYER", "setSpeed mpv error: %s", resp.Error)
 		return fmt.Errorf("mpv: %s", resp.Error)
 	}
 	return nil
 }
 
 func (m *mpvPlayer) setVolume(v float64) error {
+	logf("PLAYER", "setVolume %.2f", v)
 	resp, err := m.sendCommand([]any{"set_property", "volume", v * 100})
 	if err != nil {
+		logf("PLAYER", "setVolume error: %v", err)
 		return err
 	}
 	if resp.Error != "success" {
+		logf("PLAYER", "setVolume mpv error: %s", resp.Error)
 		return fmt.Errorf("mpv: %s", resp.Error)
 	}
 	return nil
@@ -245,6 +276,7 @@ func (m *mpvPlayer) isEnded() (bool, error) {
 }
 
 func (m *mpvPlayer) quit() {
+	logf("PLAYER", "quit")
 	_, _ = m.sendCommand([]any{"quit"})
 	_ = m.conn.Close()
 	_ = m.cmd.Wait()

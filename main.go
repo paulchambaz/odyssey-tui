@@ -14,6 +14,7 @@ type cliArgs struct {
 	command    string
 	configFile string
 	register   bool
+	debug      bool
 }
 
 func parseArgs(args []string) (cliArgs, error) {
@@ -21,18 +22,21 @@ func parseArgs(args []string) (cliArgs, error) {
 	i := 0
 	for i < len(args) {
 		switch args[i] {
-		case "--config":
+		case "-config":
 			if i+1 >= len(args) {
-				return out, fmt.Errorf("--config requires a value")
+				return out, fmt.Errorf("-config requires a value")
 			}
 			out.configFile = args[i+1]
 			i += 2
-		case "--register":
+		case "-register":
 			out.register = true
 			i++
+		case "-debug":
+			out.debug = true
+			i++
 		default:
-			if strings.HasPrefix(args[i], "--") {
-				return out, fmt.Errorf("unknown flag: %s\nusage: odyssey [--config <path>] [--register] [login|logout]", args[i])
+			if strings.HasPrefix(args[i], "-") {
+				return out, fmt.Errorf("unknown flag: %s\nusage: odyssey [-config <path>] [-register] [-debug] [login|logout]", args[i])
 			}
 			if out.command != "" {
 				return out, fmt.Errorf("unexpected argument: %s", args[i])
@@ -41,7 +45,7 @@ func parseArgs(args []string) (cliArgs, error) {
 			case "login", "logout":
 				out.command = args[i]
 			default:
-				return out, fmt.Errorf("unknown command: %s\nusage: odyssey [--config <path>] [--register] [login|logout]", args[i])
+				return out, fmt.Errorf("unknown command: %s\nusage: odyssey [-config <path>] [-register] [-debug] [login|logout]", args[i])
 			}
 			i++
 		}
@@ -114,17 +118,32 @@ func runTUI(store *Store) {
 	creds := store.LoadCredentials()
 	api := NewIliadApi(*creds)
 
+	logf("APP", "launching TUI user=%s url=%s", creds.Username, creds.BaseURL)
+
 	ps := newPlayerState(&Library{})
 	ps.api = api
 	ps.store = store
+	ps.playerSpeed = store.LoadFloat("playback_speed", 1.0)
+
+	mpv, err := newMpvPlayer()
+	if err != nil {
+		logf("APP", "mpv init failed: %v", err)
+	} else {
+		ps.mpv = mpv
+	}
 
 	p := tea.NewProgram(ps, tea.WithAltScreen())
 	ps.program = p
 
 	if _, err := p.Run(); err != nil {
+		logf("APP", "TUI error: %v", err)
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	if ps.mpv != nil {
+		ps.mpv.quit()
+	}
+	logf("APP", "=== session end ===")
 }
 
 func main() {
@@ -144,6 +163,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+
+	if cli.debug {
+		initLogger(store.LogPath())
+	}
+	logf("APP", "command=%s config=%q", cli.command, cli.configFile)
 
 	switch cli.command {
 	case "login":

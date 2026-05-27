@@ -61,6 +61,7 @@ type downloadDoneMsg struct {
 }
 
 type syncDoneMsg struct{ err error }
+type syncQuitMsg struct{}
 
 type positionSavedMsg struct {
 	hash string
@@ -71,6 +72,7 @@ type posFetchResultMsg struct {
 	pos     *Position
 	offline bool
 }
+
 
 type PlayerState struct {
 	mode       Mode
@@ -134,6 +136,7 @@ type PlayerState struct {
 	conflictServer *Position
 	conflictLocal  *Position
 
+
 	// playback position (updated from posQueryMsg)
 	positionMs int64
 	durationMs int64
@@ -143,10 +146,6 @@ type PlayerState struct {
 	statusMsg    string
 	statusErr    bool
 	statusClearAt int
-
-	// speed overlay
-	showSpeed bool
-	speedSel  int
 
 	// help context
 	helpForMode Mode
@@ -326,6 +325,7 @@ func (ps *PlayerState) maxInfoOff(b *Audiobook, inner, detailH int) int {
 }
 
 func (ps *PlayerState) Init() tea.Cmd {
+	logf("APP", "PlayerState.Init")
 	cmds := []tea.Cmd{ps.tickCmd()}
 	if ps.api != nil {
 		cmds = append(cmds, fetchBooksCmd(ps.api))
@@ -334,6 +334,16 @@ func (ps *PlayerState) Init() tea.Cmd {
 		cmds = append(cmds, loadCachedLocalBooksCmd(ps.store), loadLocalBooksCmd(ps.store))
 	}
 	return tea.Batch(cmds...)
+}
+
+func (ps *PlayerState) focusName() string {
+	if ps.libActive {
+		return "library"
+	}
+	if ps.onAlbum {
+		return "albums"
+	}
+	return "chapters"
 }
 
 func (ps *PlayerState) tickCmd() tea.Cmd {
@@ -345,6 +355,7 @@ func (ps *PlayerState) tickCmd() tea.Cmd {
 func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		logf("APP", "window resize %dx%d", msg.Width, msg.Height)
 		ps.windowWidth = msg.Width
 		ps.windowHeight = msg.Height
 		books := ps.sortedLocalBooks()
@@ -386,17 +397,25 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return ps.handleKey(msg)
 	case booksResultMsg:
 		if msg.err != nil {
+			logf("MSG", "booksResult err=%v", msg.err)
 			ps.statusMsg = msg.err.Error()
 			ps.statusErr = true
 			ps.statusClearAt = ps.tickCount + 4
 			return ps, nil
 		}
+		logf("MSG", "booksResult count=%d", len(msg.books))
 		ps.lib.Books = msg.books
 		ps.statusErr = false
 		for i := range ps.lib.Books {
 			if local, ok := ps.localByHash[ps.lib.Books[i].Hash]; ok {
 				ps.lib.Books[i].State = local.State
 				ps.lib.Books[i].Chapters = local.Chapters
+				if local.Description != "" {
+					ps.lib.Books[i].Description = local.Description
+				}
+				if len(local.Genres) > 0 {
+					ps.lib.Books[i].Genres = local.Genres
+				}
 				if local.Position != nil {
 					pos := *local.Position
 					ps.lib.Books[i].Position = &pos
@@ -416,10 +435,17 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if local, ok := ps.localByHash[ps.lib.Books[i].Hash]; ok {
 				ps.lib.Books[i].State = local.State
 				ps.lib.Books[i].Chapters = local.Chapters
+				if local.Description != "" {
+					ps.lib.Books[i].Description = local.Description
+				}
+				if len(local.Genres) > 0 {
+					ps.lib.Books[i].Genres = local.Genres
+				}
 			}
 		}
 		return ps, nil
 	case localBooksMsg:
+		logf("MSG", "localBooks count=%d", len(msg.books))
 		ps.localByHash = make(map[string]Audiobook)
 		for _, b := range msg.books {
 			ps.localByHash[b.Hash] = b
@@ -428,6 +454,12 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if local, ok := ps.localByHash[ps.lib.Books[i].Hash]; ok {
 				ps.lib.Books[i].State = local.State
 				ps.lib.Books[i].Chapters = local.Chapters
+				if local.Description != "" {
+					ps.lib.Books[i].Description = local.Description
+				}
+				if len(local.Genres) > 0 {
+					ps.lib.Books[i].Genres = local.Genres
+				}
 				if local.Position != nil {
 					pos := *local.Position
 					ps.lib.Books[i].Position = &pos
@@ -460,6 +492,15 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return ps, nil
 	case downloadDoneMsg:
+		if msg.err != nil {
+			if errors.Is(msg.err, context.Canceled) {
+				logf("DOWNLOAD", "cancelled hash=%s", msg.hash)
+			} else {
+				logf("DOWNLOAD", "failed hash=%s err=%v", msg.hash, msg.err)
+			}
+		} else {
+			logf("DOWNLOAD", "done hash=%s", msg.hash)
+		}
 		if ps.cancelDownloads != nil {
 			delete(ps.cancelDownloads, msg.hash)
 		}
@@ -499,6 +540,7 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return ps, nil
 		}
 		hash := ps.lib.PlayingHash
+		logf("MSG", "posFetchResult hash=%s offline=%v", hash, msg.offline)
 
 		localPos := Position{}
 		if book.Position != nil {
@@ -534,8 +576,12 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		resolved, conflict := resolvePosition(serverPos, localPos, lastSrvPos)
+		logf("SYNC", "resolvePosition hash=%s conflict=%v -> ch=%d pos=%dms", hash, conflict, resolved.ChapterIndex, resolved.ChapterPosition)
 
 		if conflict {
+			logf("SYNC", "conflict: local ch=%d pos=%dms ts=%d | server ch=%d pos=%dms ts=%d",
+				localPos.ChapterIndex, localPos.ChapterPosition, localPos.Timestamp,
+				serverPos.ChapterIndex, serverPos.ChapterPosition, serverPos.Timestamp)
 			ps.conflictHash = hash
 			srv := serverPos
 			loc := localPos
@@ -572,6 +618,9 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return ps, nil
 
 	case posQueryMsg:
+		if msg.err != nil {
+			logf("PLAYER", "posQuery error: %v", msg.err)
+		}
 		if msg.err != nil || ps.albumPlaying == nil {
 			return ps, nil
 		}
@@ -583,8 +632,6 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if ps.trackPlaying != nil {
 			chapter = *ps.trackPlaying
 		}
-		// Cursor follows the playing chapter so the panel always shows where we are.
-		ps.trackSelected = chapter
 		now := time.Now().Unix()
 		for i := range ps.lib.Books {
 			if ps.lib.Books[i].Hash == hash {
@@ -601,24 +648,31 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		var cmds []tea.Cmd
 		book := ps.findPlayingBook()
-		if book != nil {
-			ps.trackOffset = clampOffset(ps.trackOffset, ps.trackSelected, ps.abPanelInnerH(), 2, len(book.Chapters))
-		}
 
 		if msg.ended && book != nil && ps.trackPlaying != nil {
 			next := *ps.trackPlaying + 1
 			if next < len(book.Chapters) {
+				logf("PLAYER", "chapter ended -> next ch=%d hash=%s", next, hash)
 				ps.trackPlaying = &next
 				ps.trackSelected = next
 				chPath := ps.chapterPath(book, next)
 				if ps.mpv != nil && chPath != "" {
 					ps.mpv.loadFile(chPath, 0)
+					ps.mpv.play()
+				}
+				if ps.api != nil && ps.store != nil {
+					pos := Position{ChapterIndex: next, ChapterPosition: 0, Timestamp: now}
+					cmds = append(cmds, syncPositionCmd(ps.api, ps.store, hash, pos))
 				}
 			} else {
-				// last chapter ended
+				logf("PLAYER", "book finished hash=%s", hash)
 				ps.albumPlaying = nil
 				ps.trackPlaying = nil
 				ps.playerPaused = true
+				if ps.api != nil && ps.store != nil {
+					pos := Position{ChapterIndex: chapter, ChapterPosition: ps.positionMs, Timestamp: now}
+					cmds = append(cmds, syncPositionCmd(ps.api, ps.store, hash, pos))
+				}
 			}
 		}
 
@@ -628,11 +682,13 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				ChapterPosition: ps.positionMs,
 				Timestamp:       now,
 			}
+			logf("SYNC", "auto-sync hash=%s ch=%d pos=%dms", hash, chapter, ps.positionMs)
 			cmds = append(cmds, syncPositionCmd(ps.api, ps.store, hash, pos))
 		}
 		return ps, tea.Batch(cmds...)
 
 	case positionSavedMsg:
+		logf("SYNC", "positionSaved hash=%s ch=%d pos=%dms", msg.hash, msg.pos.ChapterIndex, msg.pos.ChapterPosition)
 		for i := range ps.lib.Books {
 			if ps.lib.Books[i].Hash == msg.hash {
 				p := msg.pos
@@ -644,11 +700,15 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case syncDoneMsg:
 		if msg.err != nil {
+			logf("SYNC", "sync failed: %v", msg.err)
 			ps.statusMsg = "sync failed: " + msg.err.Error()
 			ps.statusErr = true
 			ps.statusClearAt = ps.tickCount + 4
 		}
 		return ps, nil
+	case syncQuitMsg:
+		return ps, tea.Quit
+
 	}
 	return ps, nil
 }
@@ -723,6 +783,20 @@ func resolvePosition(server, local, lastServer Position) (Position, bool) {
 	return server, false
 }
 
+func syncAndQuitCmd(api ApiClient, store *Store, hash string, pos Position) tea.Cmd {
+	return func() tea.Msg {
+		if store != nil {
+			store.SavePosition(hash, pos)
+		}
+		if api != nil {
+			if err := api.PutPosition(hash, pos); err == nil && store != nil {
+				store.SaveServerPosition(hash, pos)
+			}
+		}
+		return syncQuitMsg{}
+	}
+}
+
 func syncPositionCmd(api ApiClient, store *Store, hash string, pos Position) tea.Cmd {
 	return func() tea.Msg {
 		if store != nil {
@@ -753,6 +827,7 @@ func fetchAndSavePositionCmd(api ApiClient, store *Store, hash string) tea.Cmd {
 		return positionSavedMsg{hash: hash, pos: pos}
 	}
 }
+
 
 func fetchPositionAndPlayCmd(api ApiClient, hash string) tea.Cmd {
 	return func() tea.Msg {

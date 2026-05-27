@@ -15,12 +15,16 @@ import (
 
 func startDownloadCmd(api ApiClient, store *Store, book *Audiobook, prog *tea.Program, ctx context.Context) tea.Cmd {
 	hash := book.Hash
+	title := book.Title
 	return func() tea.Msg {
 		go func() {
+			logf("DOWNLOAD", "start hash=%s title=%q", hash, title)
+
 			// 1. Poll until archive is ready on the server.
 			for {
 				select {
 				case <-ctx.Done():
+					logf("DOWNLOAD", "cancelled during wait hash=%s", hash)
 					prog.Send(downloadDoneMsg{hash: hash, err: ctx.Err()})
 					return
 				default:
@@ -31,26 +35,35 @@ func startDownloadCmd(api ApiClient, store *Store, book *Audiobook, prog *tea.Pr
 				}
 				select {
 				case <-ctx.Done():
+					logf("DOWNLOAD", "cancelled during wait hash=%s", hash)
 					prog.Send(downloadDoneMsg{hash: hash, err: ctx.Err()})
 					return
 				case <-time.After(3 * time.Second):
 				}
 			}
+			logf("DOWNLOAD", "archive ready hash=%s", hash)
 
 			// 2. Check for a partial archive from a previous attempt.
 			archivePath := store.LibraryDir(hash) + ".tar.gz"
 			var startByte int64
 			if info, err := os.Stat(archivePath); err == nil {
 				startByte = info.Size()
+				logf("DOWNLOAD", "resume from byte=%d hash=%s", startByte, hash)
 			}
 
 			// 3. Stream download in a sub-goroutine so we can select on ctx.Done.
 			dlDone := make(chan error, 1)
+			lastLogMilestone := -1
 			go func() {
 				dlDone <- api.DownloadAudiobook(hash, archivePath, startByte, func(received, total int64) {
 					var pct float64
 					if total > 0 {
 						pct = float64(received) / float64(total)
+					}
+					milestone := int(pct * 10)
+					if milestone > lastLogMilestone {
+						lastLogMilestone = milestone
+						logf("DOWNLOAD", "progress hash=%s pct=%d%%", hash, milestone*10)
 					}
 					prog.Send(downloadProgressMsg{hash: hash, pct: pct})
 				})
@@ -61,10 +74,12 @@ func startDownloadCmd(api ApiClient, store *Store, book *Audiobook, prog *tea.Pr
 				api.CancelDownload()
 				<-dlDone
 				os.Remove(archivePath)
+				logf("DOWNLOAD", "cancelled during transfer hash=%s", hash)
 				prog.Send(downloadDoneMsg{hash: hash, err: ctx.Err()})
 				return
 			case err := <-dlDone:
 				if err != nil {
+					logf("DOWNLOAD", "transfer error hash=%s: %v", hash, err)
 					prog.Send(downloadDoneMsg{hash: hash, err: err})
 					return
 				}
@@ -72,10 +87,13 @@ func startDownloadCmd(api ApiClient, store *Store, book *Audiobook, prog *tea.Pr
 
 			// 4. Extract.
 			libDir := store.LibraryDir(hash)
+			logf("DOWNLOAD", "extracting hash=%s dest=%s", hash, libDir)
 			if err := extractTarGz(archivePath, libDir); err != nil {
+				logf("DOWNLOAD", "extract error hash=%s: %v", hash, err)
 				prog.Send(downloadDoneMsg{hash: hash, err: err})
 				return
 			}
+			logf("DOWNLOAD", "extracted hash=%s", hash)
 
 			// 5. Delete archive, cache server position.
 			os.Remove(archivePath)
@@ -84,6 +102,7 @@ func startDownloadCmd(api ApiClient, store *Store, book *Audiobook, prog *tea.Pr
 			}
 
 			// 6. Signal success.
+			logf("DOWNLOAD", "complete hash=%s title=%q", hash, title)
 			prog.Send(downloadDoneMsg{hash: hash, err: nil})
 		}()
 		return nil

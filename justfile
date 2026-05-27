@@ -1,5 +1,5 @@
 run *ARGS:
-  @go run . --config odyssey.cfg {{ ARGS }}
+  @go run . -debug -config odyssey.cfg {{ ARGS }}
 
 build:
   @go build .
