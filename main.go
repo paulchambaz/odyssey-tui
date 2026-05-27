@@ -124,6 +124,7 @@ func runTUI(store *Store) {
 	ps.api = api
 	ps.store = store
 	ps.playerSpeed = store.LoadFloat("playback_speed", 1.0)
+	ps.playerVolume = store.LoadInt("volume", 100)
 
 	mpv, err := newMpvPlayer()
 	if err != nil {

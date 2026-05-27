@@ -22,6 +22,7 @@ type storeConfig struct {
 	DownloadLocation string  `toml:"download_location"`
 	RewindOnResume   int     `toml:"rewind_on_resume"`
 	PlaybackSpeed    float64 `toml:"playback_speed"`
+	Volume           int     `toml:"volume,omitempty"`
 	VolumeNorm       *bool   `toml:"volume_normalization,omitempty"`
 }
 
@@ -283,6 +284,10 @@ func (s *Store) LoadInt(key string, def int) int {
 		if cfg.RewindOnResume != 0 {
 			return cfg.RewindOnResume
 		}
+	case "volume":
+		if cfg.Volume != 0 {
+			return cfg.Volume
+		}
 	}
 	return def
 }
@@ -316,6 +321,8 @@ func (s *Store) SaveSetting(key string, val any) error {
 		cfg.PlaybackSpeed = val.(float64)
 	case "rewind_on_resume":
 		cfg.RewindOnResume = val.(int)
+	case "volume":
+		cfg.Volume = val.(int)
 	case "volume_normalization":
 		v := val.(bool)
 		cfg.VolumeNorm = &v

@@ -420,6 +420,9 @@ func (ps *PlayerState) handleMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if ps.mpv != nil {
 			_ = ps.mpv.setVolume(float64(v) / 100.0)
 		}
+		if ps.store != nil {
+			_ = ps.store.SaveSetting("volume", v)
+		}
 
 	case "=":
 		v := ps.playerVolume + 10
@@ -430,6 +433,9 @@ func (ps *PlayerState) handleMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		logf("KEY", "volume up -> %d", v)
 		if ps.mpv != nil {
 			_ = ps.mpv.setVolume(float64(v) / 100.0)
+		}
+		if ps.store != nil {
+			_ = ps.store.SaveSetting("volume", v)
 		}
 
 	case ",":
