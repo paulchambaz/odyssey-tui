@@ -14,7 +14,8 @@ func (ps *PlayerState) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		logf("KEY", "force quit")
 		return ps, tea.Quit
 	case "?":
-		if ps.mode != ModeHelp && ps.mode != ModeSearch && ps.mode != ModeSearching {
+		if ps.mode != ModeHelp && ps.mode != ModeSearch && ps.mode != ModeSearching &&
+			ps.mode != ModeLibSearch && ps.mode != ModeLibSearching {
 			logf("MODE", "%s -> help", modeName(ps.mode))
 			ps.returnMode = ps.mode
 			ps.helpForMode = ps.mode
@@ -38,6 +39,10 @@ func (ps *PlayerState) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return ps.handleSearch(msg)
 	case ModeSearching:
 		return ps.handleSearching(msg)
+	case ModeLibSearch:
+		return ps.handleLibSearch(msg)
+	case ModeLibSearching:
+		return ps.handleLibSearching(msg)
 	}
 	return ps, nil
 }
@@ -357,7 +362,10 @@ func (ps *PlayerState) handleMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "/":
-		if ps.onAlbum && !ps.libActive {
+		if ps.libActive {
+			logf("KEY", "enter lib search mode")
+			ps.enterLibSearch()
+		} else if ps.onAlbum {
 			logf("KEY", "enter search mode")
 			ps.enterSearch()
 		}
@@ -566,6 +574,89 @@ func (ps *PlayerState) handleSearching(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "/":
 		logf("MODE", "searching -> search (re-edit)")
 		ps.mode = ModeSearch
+	}
+	return ps, nil
+}
+
+func (ps *PlayerState) handleLibSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q":
+		return ps, tea.Quit
+	}
+	switch msg.Type {
+	case tea.KeyEscape:
+		ps.cancelLibSearch()
+	case tea.KeyEnter:
+		ps.confirmLibSearch()
+	case tea.KeyBackspace:
+		if ps.libQuery == "" {
+			ps.cancelLibSearch()
+		} else {
+			ps.libQuery = ps.libQuery[:len(ps.libQuery)-1]
+			ps.runLibSearch()
+			if len(ps.libMatches) > 0 {
+				ps.jumpToLibMatch(0)
+			}
+		}
+	case tea.KeySpace:
+		ps.libQuery += " "
+		ps.runLibSearch()
+		if len(ps.libMatches) > 0 {
+			ps.jumpToLibMatch(0)
+		}
+	case tea.KeyRunes:
+		for _, r := range msg.Runes {
+			ps.libQuery += string(r)
+		}
+		ps.runLibSearch()
+		if len(ps.libMatches) > 0 {
+			ps.jumpToLibMatch(0)
+		}
+	}
+	return ps, nil
+}
+
+func (ps *PlayerState) handleLibSearching(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q":
+		return ps, tea.Quit
+	case "n":
+		if len(ps.libMatches) > 0 {
+			next := (ps.libMatchIdx + 1) % len(ps.libMatches)
+			logf("KEY", "lib search next match=%d/%d", next+1, len(ps.libMatches))
+			ps.jumpToLibMatch(next)
+		}
+	case "p":
+		if len(ps.libMatches) > 0 {
+			prev := (ps.libMatchIdx + len(ps.libMatches) - 1) % len(ps.libMatches)
+			logf("KEY", "lib search prev match=%d/%d", prev+1, len(ps.libMatches))
+			ps.jumpToLibMatch(prev)
+		}
+	case "j", "down":
+		if len(ps.libMatches) > 0 {
+			pos := ps.libSelPos()
+			if pos >= 0 && pos+1 < len(ps.libMatches) {
+				logf("KEY", "lib search j pos=%d->%d", pos, pos+1)
+				ps.jumpToLibMatch(pos + 1)
+			}
+		}
+	case "k", "up":
+		if len(ps.libMatches) > 0 {
+			pos := ps.libSelPos()
+			if pos > 0 {
+				logf("KEY", "lib search k pos=%d->%d", pos, pos-1)
+				ps.jumpToLibMatch(pos - 1)
+			}
+		}
+	case "enter":
+		logf("KEY", "lib search confirm query=%q match=%d/%d", ps.libQuery, ps.libMatchIdx+1, len(ps.libMatches))
+		ps.exitLibSearchKeep()
+	case "esc":
+		logf("KEY", "lib search cancel")
+		ps.cancelLibSearch()
+	case "/", "i":
+		logf("MODE", "libsearching -> libsearch (re-edit)")
+		ps.mode = ModeLibSearch
 	}
 	return ps, nil
 }

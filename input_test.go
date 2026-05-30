@@ -1736,3 +1736,330 @@ func TestUpdate_BooksResultMsg_SortsReadyLast(t *testing.T) {
 		t.Errorf("[1] = %s, want ready", ps2.lib.Books[1].Hash)
 	}
 }
+
+//  handleMain — / lib search entry
+
+func TestHandleMain_Slash_WhenLibActive_EntersModeLibSearch(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showLibrary = true
+	ps.libActive = true
+	ps.onAlbum = false
+	ps2, _ := pressKey(ps, "/")
+	if ps2.mode != ModeLibSearch {
+		t.Errorf("mode = %v, want ModeLibSearch", ps2.mode)
+	}
+}
+
+func TestHandleMain_Slash_WhenLibActive_SavesLibCursor(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.showLibrary = true
+	ps.libActive = true
+	ps.onAlbum = false
+	ps.libSel = 3
+	ps.libOffset = 2
+	ps2, _ := pressKey(ps, "/")
+	if ps2.libSavedSel != 3 {
+		t.Errorf("libSavedSel = %d, want 3", ps2.libSavedSel)
+	}
+	if ps2.libSavedOffset != 2 {
+		t.Errorf("libSavedOffset = %d, want 2", ps2.libSavedOffset)
+	}
+}
+
+func TestHandleMain_Slash_WhenNotLibActive_DoesNotEnterLibSearch(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.libActive = false
+	ps.onAlbum = true
+	ps2, _ := pressKey(ps, "/")
+	if ps2.mode == ModeLibSearch {
+		t.Error("/ when not libActive should not enter ModeLibSearch")
+	}
+}
+
+//  handleLibSearch
+
+func TestHandleLibSearch_TypingRune_AppendsToQuery(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeLibSearch
+	ps2, _ := pressKey(ps, "d")
+	if ps2.libQuery != "d" {
+		t.Errorf("libQuery = %q, want %q", ps2.libQuery, "d")
+	}
+}
+
+func TestHandleLibSearch_TypingMultipleRunes(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeLibSearch
+	ps2, _ := pressKey(ps, "d")
+	ps3, _ := pressKey(ps2, "u")
+	if ps3.libQuery != "du" {
+		t.Errorf("libQuery = %q, want %q", ps3.libQuery, "du")
+	}
+}
+
+func TestHandleLibSearch_TypingRune_RunsSearch(t *testing.T) {
+	b := makeLibBook("a", "Dune", "Herbert", 1965, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b}))
+	ps.mode = ModeLibSearch
+	ps2, _ := pressKey(ps, "d")
+	if len(ps2.libMatches) == 0 {
+		t.Error("typing should populate libMatches via runLibSearch")
+	}
+}
+
+func TestHandleLibSearch_Backspace_RemovesLastChar(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeLibSearch
+	ps.libQuery = "ab"
+	ps2, _ := pressKey(ps, "backspace")
+	if ps2.libQuery != "a" {
+		t.Errorf("libQuery = %q, want %q after backspace", ps2.libQuery, "a")
+	}
+}
+
+func TestHandleLibSearch_Backspace_Empty_Cancels(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeLibSearch
+	ps.libQuery = ""
+	ps.libSavedSel = 3
+	ps.libSel = 7
+	ps2, _ := pressKey(ps, "backspace")
+	if ps2.libSel != 3 {
+		t.Errorf("libSel = %d, want 3 (restored)", ps2.libSel)
+	}
+	if ps2.mode != ModeMain {
+		t.Errorf("mode = %v, want ModeMain", ps2.mode)
+	}
+}
+
+func TestHandleLibSearch_Enter_NonEmpty_Transitions(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeLibSearch
+	ps.libQuery = "dune"
+	ps2, _ := pressKey(ps, "enter")
+	if ps2.mode != ModeLibSearching {
+		t.Errorf("mode = %v, want ModeLibSearching", ps2.mode)
+	}
+}
+
+func TestHandleLibSearch_Enter_Empty_Cancels(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeLibSearch
+	ps.libQuery = ""
+	ps.libSavedSel = 2
+	ps.libSel = 5
+	ps2, _ := pressKey(ps, "enter")
+	if ps2.mode == ModeLibSearching {
+		t.Error("empty query should not enter ModeLibSearching")
+	}
+	if ps2.libSel != 2 {
+		t.Errorf("libSel = %d, want 2 (restored on cancel)", ps2.libSel)
+	}
+}
+
+func TestHandleLibSearch_Escape_Cancels(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeLibSearch
+	ps.libQuery = "foo"
+	ps.libSavedSel = 4
+	ps.libSel = 9
+	ps2, _ := pressKey(ps, "esc")
+	if ps2.mode != ModeMain {
+		t.Errorf("mode = %v, want ModeMain", ps2.mode)
+	}
+	if ps2.libSel != 4 {
+		t.Errorf("libSel = %d, want 4 (restored)", ps2.libSel)
+	}
+}
+
+//  handleLibSearching
+
+func TestHandleLibSearching_N_AdvancesIdx(t *testing.T) {
+	b1 := makeLibBook("a", "A", "Auth", 1900, nil)
+	b2 := makeLibBook("b", "B", "Auth", 1900, nil)
+	b3 := makeLibBook("c", "C", "Auth", 1900, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b1, b2, b3}))
+	ps.mode = ModeLibSearching
+	ps.libMatches = []int{0, 1, 2}
+	ps.libMatchIdx = 0
+	ps2, _ := pressKey(ps, "n")
+	if ps2.libMatchIdx != 1 {
+		t.Errorf("libMatchIdx = %d, want 1", ps2.libMatchIdx)
+	}
+	if ps2.libSel != 1 {
+		t.Errorf("libSel = %d, want 1", ps2.libSel)
+	}
+}
+
+func TestHandleLibSearching_N_Wraps(t *testing.T) {
+	b1 := makeLibBook("a", "A", "Auth", 1900, nil)
+	b2 := makeLibBook("b", "B", "Auth", 1900, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b1, b2}))
+	ps.mode = ModeLibSearching
+	ps.libMatches = []int{0, 1}
+	ps.libMatchIdx = 1
+	ps2, _ := pressKey(ps, "n")
+	if ps2.libMatchIdx != 0 {
+		t.Errorf("libMatchIdx = %d, want 0 (wrapped)", ps2.libMatchIdx)
+	}
+}
+
+func TestHandleLibSearching_P_DecrementsIdx(t *testing.T) {
+	b1 := makeLibBook("a", "A", "Auth", 1900, nil)
+	b2 := makeLibBook("b", "B", "Auth", 1900, nil)
+	b3 := makeLibBook("c", "C", "Auth", 1900, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b1, b2, b3}))
+	ps.mode = ModeLibSearching
+	ps.libMatches = []int{0, 1, 2}
+	ps.libMatchIdx = 2
+	ps2, _ := pressKey(ps, "p")
+	if ps2.libMatchIdx != 1 {
+		t.Errorf("libMatchIdx = %d, want 1", ps2.libMatchIdx)
+	}
+}
+
+func TestHandleLibSearching_P_WrapsBackward(t *testing.T) {
+	b1 := makeLibBook("a", "A", "Auth", 1900, nil)
+	b2 := makeLibBook("b", "B", "Auth", 1900, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b1, b2}))
+	ps.mode = ModeLibSearching
+	ps.libMatches = []int{0, 1}
+	ps.libMatchIdx = 0
+	ps2, _ := pressKey(ps, "p")
+	if ps2.libMatchIdx != 1 {
+		t.Errorf("libMatchIdx = %d, want 1 (wrapped backward)", ps2.libMatchIdx)
+	}
+}
+
+func TestHandleLibSearching_Enter_ExitsKeepPosition(t *testing.T) {
+	b1 := makeLibBook("a", "A", "Auth", 1900, nil)
+	b2 := makeLibBook("b", "B", "Auth", 1900, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b1, b2}))
+	ps.mode = ModeLibSearching
+	ps.libMatches = []int{1, 0}
+	ps.libMatchIdx = 0
+	ps.libSel = 1
+	ps.libSavedSel = 0
+	ps2, _ := pressKey(ps, "enter")
+	if ps2.mode != ModeMain {
+		t.Errorf("mode = %v, want ModeMain", ps2.mode)
+	}
+	if ps2.libSel != 1 {
+		t.Errorf("libSel = %d, want 1 (kept)", ps2.libSel)
+	}
+}
+
+func TestHandleLibSearching_Escape_RestoresOriginal(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeLibSearching
+	ps.libSel = 5
+	ps.libSavedSel = 1
+	ps.libSavedOffset = 0
+	ps2, _ := pressKey(ps, "esc")
+	if ps2.mode != ModeMain {
+		t.Errorf("mode = %v, want ModeMain", ps2.mode)
+	}
+	if ps2.libSel != 1 {
+		t.Errorf("libSel = %d, want 1 (restored)", ps2.libSel)
+	}
+}
+
+func TestHandleLibSearching_Slash_ReturnToLibSearch(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeLibSearching
+	ps2, _ := pressKey(ps, "/")
+	if ps2.mode != ModeLibSearch {
+		t.Errorf("mode = %v, want ModeLibSearch", ps2.mode)
+	}
+}
+
+func TestHandleLibSearching_I_ReturnToLibSearch(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeLibSearching
+	ps2, _ := pressKey(ps, "i")
+	if ps2.mode != ModeLibSearch {
+		t.Errorf("mode = %v, want ModeLibSearch", ps2.mode)
+	}
+}
+
+func TestHandleLibSearch_Q_Quits(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeLibSearch
+	_, cmd := pressKey(ps, "q")
+	if !isQuitCmd(cmd) {
+		t.Error("q in ModeLibSearch should quit")
+	}
+}
+
+func TestHandleLibSearching_Q_Quits(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.mode = ModeLibSearching
+	_, cmd := pressKey(ps, "q")
+	if !isQuitCmd(cmd) {
+		t.Error("q in ModeLibSearching should quit")
+	}
+}
+
+func TestHandleLibSearching_J_NavigatesFilteredList(t *testing.T) {
+	b0 := makeLibBook("a", "A", "Auth", 1900, nil)
+	b1 := makeLibBook("b", "B", "Auth", 1900, nil)
+	b2 := makeLibBook("c", "C", "Auth", 1900, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b0, b1, b2}))
+	ps.mode = ModeLibSearching
+	ps.libMatches = []int{0, 2}
+	ps.libMatchIdx = 0
+	ps.libSel = 0
+	ps2, _ := pressKey(ps, "j")
+	if ps2.libSel != 2 {
+		t.Errorf("libSel = %d, want 2 (next filtered item)", ps2.libSel)
+	}
+	if ps2.libMatchIdx != 1 {
+		t.Errorf("libMatchIdx = %d, want 1", ps2.libMatchIdx)
+	}
+}
+
+func TestHandleLibSearching_K_NavigatesFilteredList(t *testing.T) {
+	b0 := makeLibBook("a", "A", "Auth", 1900, nil)
+	b1 := makeLibBook("b", "B", "Auth", 1900, nil)
+	b2 := makeLibBook("c", "C", "Auth", 1900, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b0, b1, b2}))
+	ps.mode = ModeLibSearching
+	ps.libMatches = []int{0, 2}
+	ps.libMatchIdx = 1
+	ps.libSel = 2
+	ps2, _ := pressKey(ps, "k")
+	if ps2.libSel != 0 {
+		t.Errorf("libSel = %d, want 0 (prev filtered item)", ps2.libSel)
+	}
+	if ps2.libMatchIdx != 0 {
+		t.Errorf("libMatchIdx = %d, want 0", ps2.libMatchIdx)
+	}
+}
+
+func TestHandleLibSearching_J_AtEnd_DoesNotMove(t *testing.T) {
+	b0 := makeLibBook("a", "A", "Auth", 1900, nil)
+	b2 := makeLibBook("c", "C", "Auth", 1900, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b0, b2}))
+	ps.mode = ModeLibSearching
+	ps.libMatches = []int{0, 1}
+	ps.libMatchIdx = 1
+	ps.libSel = 1
+	ps2, _ := pressKey(ps, "j")
+	if ps2.libSel != 1 {
+		t.Errorf("libSel = %d, want 1 (no move at end)", ps2.libSel)
+	}
+}
+
+func TestHandleLibSearching_K_AtStart_DoesNotMove(t *testing.T) {
+	b0 := makeLibBook("a", "A", "Auth", 1900, nil)
+	b2 := makeLibBook("c", "C", "Auth", 1900, nil)
+	ps := newPlayerState(makeLib("", []Audiobook{b0, b2}))
+	ps.mode = ModeLibSearching
+	ps.libMatches = []int{0, 1}
+	ps.libMatchIdx = 0
+	ps.libSel = 0
+	ps2, _ := pressKey(ps, "k")
+	if ps2.libSel != 0 {
+		t.Errorf("libSel = %d, want 0 (no move at start)", ps2.libSel)
+	}
+}

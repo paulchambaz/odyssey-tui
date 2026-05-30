@@ -22,6 +22,8 @@ const (
 	ModeHelp
 	ModeSearch
 	ModeSearching
+	ModeLibSearch
+	ModeLibSearching
 )
 
 var speedSteps = []float64{0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0}
@@ -62,6 +64,8 @@ type downloadDoneMsg struct {
 
 type syncDoneMsg struct{ err error }
 type syncQuitMsg struct{}
+
+type serverCatalogMsg struct{ books []Audiobook }
 
 type audiobookDetailMsg struct {
 	book Audiobook
@@ -131,6 +135,13 @@ type PlayerState struct {
 	searchMatchIdx   int
 	searchSavedAlbum  int
 	searchSavedOffset int
+
+	// library search
+	libQuery       string
+	libMatches     []int
+	libMatchIdx    int
+	libSavedSel    int
+	libSavedOffset int
 
 	// download metadata
 	downloadTimes    map[string]int64
@@ -332,11 +343,11 @@ func (ps *PlayerState) maxInfoOff(b *Audiobook, inner, detailH int) int {
 func (ps *PlayerState) Init() tea.Cmd {
 	logf("APP", "PlayerState.Init")
 	cmds := []tea.Cmd{ps.tickCmd()}
+	if ps.store != nil {
+		cmds = append(cmds, loadServerCatalogCmd(ps.store), loadCachedLocalBooksCmd(ps.store), loadLocalBooksCmd(ps.store))
+	}
 	if ps.api != nil {
 		cmds = append(cmds, fetchBooksCmd(ps.api))
-	}
-	if ps.store != nil {
-		cmds = append(cmds, loadCachedLocalBooksCmd(ps.store), loadLocalBooksCmd(ps.store))
 	}
 	return tea.Batch(cmds...)
 }
@@ -400,6 +411,36 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return ps, tea.Batch(cmds...)
 	case tea.KeyMsg:
 		return ps.handleKey(msg)
+	case serverCatalogMsg:
+		if len(ps.lib.Books) > 0 {
+			return ps, nil
+		}
+		ps.lib.Books = msg.books
+		if ps.localByHash != nil {
+			for i := range ps.lib.Books {
+				if local, ok := ps.localByHash[ps.lib.Books[i].Hash]; ok {
+					ps.lib.Books[i].State = local.State
+					ps.lib.Books[i].Chapters = local.Chapters
+					if local.Description != "" {
+						ps.lib.Books[i].Description = local.Description
+					}
+					if len(local.Genres) > 0 {
+						ps.lib.Books[i].Genres = local.Genres
+					}
+					if local.Position != nil {
+						pos := *local.Position
+						ps.lib.Books[i].Position = &pos
+					}
+				}
+			}
+		}
+		sortLibraryBooks(ps.lib.Books)
+		if n := len(ps.lib.Books); n > 0 && ps.libSel >= n {
+			ps.libSel = n - 1
+		}
+		ps.libOffset = clampOffset(ps.libOffset, ps.libSel, ps.libListH(), 2, len(ps.lib.Books))
+		return ps, nil
+
 	case booksResultMsg:
 		if msg.err != nil {
 			logf("MSG", "booksResult err=%v", msg.err)
@@ -411,6 +452,10 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		logf("MSG", "booksResult count=%d", len(msg.books))
 		ps.lib.Books = msg.books
 		ps.statusErr = false
+		var saveCmd tea.Cmd
+		if ps.store != nil {
+			saveCmd = saveServerCatalogCmd(ps.store, msg.books)
+		}
 		for i := range ps.lib.Books {
 			if local, ok := ps.localByHash[ps.lib.Books[i].Hash]; ok {
 				ps.lib.Books[i].State = local.State
@@ -432,7 +477,7 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ps.libSel = n - 1
 		}
 		ps.libOffset = clampOffset(ps.libOffset, ps.libSel, ps.libListH(), 2, len(ps.lib.Books))
-		return ps, nil
+		return ps, saveCmd
 	case cachedLocalBooksMsg:
 		if ps.localByHash != nil {
 			return ps, nil
@@ -662,6 +707,23 @@ func (ps *PlayerState) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Re-anchor albumPlaying and cursor after timestamp update re-sorts the list.
+		if ps.albumPlaying != nil {
+			oldIdx := *ps.albumPlaying
+			sorted := ps.sortedLocalBooks()
+			for newIdx, b := range sorted {
+				if b.Hash == hash {
+					if ps.albumSelected == oldIdx {
+						ps.albumSelected = newIdx
+						ps.albumOffset = clampOffset(ps.albumOffset, ps.albumSelected, ps.abPanelInnerH(), 2, len(sorted))
+					}
+					n := newIdx
+					ps.albumPlaying = &n
+					break
+				}
+			}
+		}
+
 		var cmds []tea.Cmd
 		book := ps.findPlayingBook()
 
@@ -752,6 +814,23 @@ func fetchBooksCmd(api ApiClient) tea.Cmd {
 	return func() tea.Msg {
 		books, err := api.GetAudiobooks()
 		return booksResultMsg{books: books, err: err}
+	}
+}
+
+func loadServerCatalogCmd(store *Store) tea.Cmd {
+	return func() tea.Msg {
+		books := store.LoadServerCatalog()
+		if books == nil {
+			return nil
+		}
+		return serverCatalogMsg{books: books}
+	}
+}
+
+func saveServerCatalogCmd(store *Store, books []Audiobook) tea.Cmd {
+	return func() tea.Msg {
+		store.SaveServerCatalog(books)
+		return nil
 	}
 }
 

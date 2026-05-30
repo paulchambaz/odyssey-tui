@@ -1092,3 +1092,136 @@ func TestTickMsg_DoesNotClearBeforeDelay(t *testing.T) {
 		t.Errorf("statusMsg = %q, want %q before delay", ps2.statusMsg, "error")
 	}
 }
+
+//  posQueryMsg cursor re-anchor
+
+// TestPosQueryMsg_CursorFollowsPlayingBookToTop verifies that when a playing
+// book receives a timestamp update that sorts it to index 0, both albumPlaying
+// and albumSelected follow it there.
+func TestPosQueryMsg_CursorFollowsPlayingBookToTop(t *testing.T) {
+	// h1 has an older timestamp (will sort below h2 once h2 gets now).
+	// h2 has no position → no timestamp → ranks below in-progress h1 initially.
+	// We simulate: user starts playing h2 (albumSelected=1 in sorted list),
+	// then posQueryMsg fires and timestamps h2 with now → h2 sorts to index 0.
+	oldTs := int64(1000)
+	pos1 := &Position{ChapterIndex: 0, ChapterPosition: 5000, Timestamp: oldTs}
+	books := []Audiobook{
+		makeBook("h1", DownloadReady, makeChapters(60000, 60000), pos1),
+		makeBook("h2", DownloadReady, makeChapters(60000, 60000), nil),
+	}
+	ps := newPlayerState(makeLib("h2", books))
+
+	// Sorted order: h1 (in-progress, ts=1000) at 0, h2 (not-started) at 1.
+	// albumSelected should start at 1 (pointing at h2, the playing book).
+	if ps.albumSelected != 1 {
+		t.Fatalf("pre-condition: albumSelected = %d, want 1", ps.albumSelected)
+	}
+	if ps.albumPlaying == nil || *ps.albumPlaying != 1 {
+		t.Fatalf("pre-condition: albumPlaying = %v, want &1", ps.albumPlaying)
+	}
+
+	// posQueryMsg gives h2 a fresh timestamp → it becomes in-progress with ts=now → sorts to 0.
+	m, _ := ps.Update(posQueryMsg{posMs: 1000, durMs: 120000})
+	ps2 := m.(*PlayerState)
+
+	if ps2.albumPlaying == nil || *ps2.albumPlaying != 0 {
+		t.Errorf("albumPlaying = %v, want &0 after h2 sorted to top", ps2.albumPlaying)
+	}
+	if ps2.albumSelected != 0 {
+		t.Errorf("albumSelected = %d, want 0 after playing book sorted to top", ps2.albumSelected)
+	}
+}
+
+//  serverCatalogMsg
+
+func TestLoadServerCatalogCmd_ReturnsServerCatalogMsg(t *testing.T) {
+	s := newTestStore(t)
+	books := []Audiobook{
+		makeBook("h1", DownloadRemote, nil, nil),
+		makeBook("h2", DownloadRemote, nil, nil),
+	}
+	if err := s.SaveServerCatalog(books); err != nil {
+		t.Fatalf("SaveServerCatalog: %v", err)
+	}
+	cmd := loadServerCatalogCmd(s)
+	msg := cmd()
+	got, ok := msg.(serverCatalogMsg)
+	if !ok {
+		t.Fatalf("got %T, want serverCatalogMsg", msg)
+	}
+	if len(got.books) != 2 {
+		t.Errorf("len = %d, want 2", len(got.books))
+	}
+}
+
+func TestLoadServerCatalogCmd_ReturnsNilWhenAbsent(t *testing.T) {
+	s := newTestStore(t)
+	cmd := loadServerCatalogCmd(s)
+	if msg := cmd(); msg != nil {
+		t.Errorf("got %T, want nil", msg)
+	}
+}
+
+func TestUpdate_ServerCatalogMsg_PopulatesEmptyLibrary(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	books := []Audiobook{
+		makeBook("h1", DownloadRemote, nil, nil),
+		makeBook("h2", DownloadRemote, nil, nil),
+	}
+	m, _ := ps.Update(serverCatalogMsg{books: books})
+	ps2 := m.(*PlayerState)
+	if len(ps2.lib.Books) != 2 {
+		t.Errorf("len(lib.Books) = %d, want 2", len(ps2.lib.Books))
+	}
+}
+
+func TestUpdate_ServerCatalogMsg_NoOpWhenLibraryAlreadyPopulated(t *testing.T) {
+	books := []Audiobook{
+		makeBook("a", DownloadRemote, nil, nil),
+		makeBook("b", DownloadRemote, nil, nil),
+		makeBook("c", DownloadRemote, nil, nil),
+	}
+	ps := newPlayerState(makeLib("", books))
+	m, _ := ps.Update(serverCatalogMsg{books: []Audiobook{makeBook("z", DownloadRemote, nil, nil)}})
+	ps2 := m.(*PlayerState)
+	if len(ps2.lib.Books) != 3 {
+		t.Errorf("len(lib.Books) = %d, want 3 (guard should prevent overwrite)", len(ps2.lib.Books))
+	}
+}
+
+func TestUpdate_ServerCatalogMsg_MergesLocalByHashIfPresent(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.localByHash = map[string]Audiobook{
+		"h1": makeBook("h1", DownloadReady, makeChapters(60000, 60000), nil),
+	}
+	catalog := []Audiobook{makeBook("h1", DownloadRemote, nil, nil)}
+	m, _ := ps.Update(serverCatalogMsg{books: catalog})
+	ps2 := m.(*PlayerState)
+	if len(ps2.lib.Books) != 1 {
+		t.Fatalf("len(lib.Books) = %d, want 1", len(ps2.lib.Books))
+	}
+	if ps2.lib.Books[0].State != DownloadReady {
+		t.Errorf("State = %v, want DownloadReady (merged from localByHash)", ps2.lib.Books[0].State)
+	}
+	if len(ps2.lib.Books[0].Chapters) != 2 {
+		t.Errorf("len(Chapters) = %d, want 2 (merged from localByHash)", len(ps2.lib.Books[0].Chapters))
+	}
+}
+
+func TestUpdate_BooksResultMsg_SavesCatalogOnSuccess(t *testing.T) {
+	ps := newPlayerState(makeLib("", nil))
+	ps.store = newTestStore(t)
+	books := []Audiobook{
+		makeBook("h1", DownloadRemote, nil, nil),
+		makeBook("h2", DownloadRemote, nil, nil),
+	}
+	_, cmd := ps.Update(booksResultMsg{books: books})
+	if cmd == nil {
+		t.Fatal("cmd = nil, want save command")
+	}
+	cmd()
+	got := ps.store.LoadServerCatalog()
+	if len(got) != 2 {
+		t.Errorf("LoadServerCatalog() len = %d, want 2", len(got))
+	}
+}

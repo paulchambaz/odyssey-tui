@@ -367,8 +367,8 @@ func TestParseInfoYml_BasicParsing(t *testing.T) {
 	}
 }
 
-func TestParseInfoYml_WithDurations(t *testing.T) {
-	// info.yml stores duration in seconds; parseInfoYml must convert to ms internally.
+func TestParseInfoYml_DurationIgnored(t *testing.T) {
+	// info.yml duration fields are ignored; durations come from probing.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "info.yml")
 	writeInfoYml(t, path, `
@@ -378,23 +378,21 @@ date: 2000
 chapters:
   - title: "Ch1"
     path: "01.opus"
-    duration: 120
   - title: "Ch2"
     path: "02.opus"
-    duration: 80
 `)
 	book, err := parseInfoYml(path)
 	if err != nil {
 		t.Fatalf("parseInfoYml: %v", err)
 	}
-	if book.Chapters[0].Duration != 120000 {
-		t.Errorf("Ch1 duration = %d, want 120000 ms", book.Chapters[0].Duration)
+	if book.Chapters[0].Duration != 0 {
+		t.Errorf("Ch1 duration = %d, want 0 (probed separately)", book.Chapters[0].Duration)
 	}
-	if book.Chapters[1].Duration != 80000 {
-		t.Errorf("Ch2 duration = %d, want 80000 ms", book.Chapters[1].Duration)
+	if book.Chapters[1].Duration != 0 {
+		t.Errorf("Ch2 duration = %d, want 0 (probed separately)", book.Chapters[1].Duration)
 	}
-	if book.Duration != 200000 {
-		t.Errorf("total Duration = %d, want 200000 ms", book.Duration)
+	if book.Duration != 0 {
+		t.Errorf("total Duration = %d, want 0 (probed separately)", book.Duration)
 	}
 }
 
@@ -612,6 +610,349 @@ func TestOpusDurationMs_MissingFile(t *testing.T) {
 	}
 }
 
+//  makeTestMP3 / mp3DurationMs
+
+// makeTestMP3 writes a minimal CBR MPEG1 Layer III file whose duration is
+// exactly durationMs milliseconds (within 1 ms). No actual audio data.
+func makeTestMP3(t *testing.T, durationMs int64) string {
+	t.Helper()
+	// MPEG1, Layer III, 128 kbps, 44100 Hz, stereo.
+	const bitrate = 128000
+	const sampleRate = 44100
+	const samplesPerFrame = 1152
+	frameSize := 144 * bitrate / sampleRate // 417 bytes
+	frames := durationMs * int64(sampleRate) / (int64(samplesPerFrame) * 1000)
+	if frames == 0 {
+		frames = 1
+	}
+
+	// Frame header: sync + MPEG1 Layer3 128kbps 44100Hz stereo.
+	frameHdr := []byte{0xff, 0xfb, 0x90, 0x00}
+	frame := make([]byte, frameSize)
+	copy(frame, frameHdr)
+
+	buf := make([]byte, 0, int(frames)*frameSize)
+	for i := int64(0); i < frames; i++ {
+		buf = append(buf, frame...)
+	}
+
+	path := filepath.Join(t.TempDir(), "test.mp3")
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		t.Fatalf("write test.mp3: %v", err)
+	}
+	return path
+}
+
+func TestMP3DurationMs_CBR(t *testing.T) {
+	want := int64(10000) // 10 seconds
+	path := makeTestMP3(t, want)
+	got, err := mp3DurationMs(path)
+	if err != nil {
+		t.Fatalf("mp3DurationMs: %v", err)
+	}
+	// CBR estimation can be off by a frame; allow ±100 ms tolerance.
+	if got < want-100 || got > want+100 {
+		t.Errorf("duration = %d ms, want ~%d ms", got, want)
+	}
+}
+
+func TestMP3DurationMs_MissingFile(t *testing.T) {
+	_, err := mp3DurationMs("/nonexistent/file.mp3")
+	if err == nil {
+		t.Error("expected error for missing file, got nil")
+	}
+}
+
+//  makeTestM4A / m4aDurationMs
+
+// makeTestM4A writes a minimal MPEG-4 file containing only ftyp + moov/mvhd.
+func makeTestM4A(t *testing.T, durationMs int64) string {
+	t.Helper()
+	const timescale = 1000
+
+	be32 := func(v uint32) []byte {
+		b := make([]byte, 4)
+		binary.BigEndian.PutUint32(b, v)
+		return b
+	}
+	box := func(typ string, payload []byte) []byte {
+		size := uint32(8 + len(payload))
+		b := make([]byte, 4)
+		binary.BigEndian.PutUint32(b, size)
+		b = append(b, []byte(typ)...)
+		b = append(b, payload...)
+		return b
+	}
+
+	// mvhd version 0: 4 flags + 4 ctime + 4 mtime + 4 timescale + 4 duration + 76 rest
+	mvhdPayload := make([]byte, 96)
+	copy(mvhdPayload[12:16], be32(timescale))
+	copy(mvhdPayload[16:20], be32(uint32(durationMs)))
+	// matrix identity + pre-defined zeros already zero
+	mvhdPayload[95] = 0 // next track id byte (simplified)
+
+	mvhd := box("mvhd", mvhdPayload)
+	moov := box("moov", mvhd)
+	ftyp := box("ftyp", []byte("M4A \x00\x00\x00\x00"))
+
+	buf := append(ftyp, moov...)
+	path := filepath.Join(t.TempDir(), "test.m4a")
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		t.Fatalf("write test.m4a: %v", err)
+	}
+	return path
+}
+
+func TestM4ADurationMs_Basic(t *testing.T) {
+	want := int64(90000) // 90 seconds
+	path := makeTestM4A(t, want)
+	got, err := m4aDurationMs(path)
+	if err != nil {
+		t.Fatalf("m4aDurationMs: %v", err)
+	}
+	if got != want {
+		t.Errorf("duration = %d ms, want %d ms", got, want)
+	}
+}
+
+func TestM4ADurationMs_M4B(t *testing.T) {
+	want := int64(3600000) // 1 hour
+	path := makeTestM4A(t, want)
+	// Rename to .m4b to verify dispatch works for that extension too.
+	m4b := path[:len(path)-4] + ".m4b"
+	if err := os.Rename(path, m4b); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	got, err := m4aDurationMs(m4b)
+	if err != nil {
+		t.Fatalf("m4aDurationMs: %v", err)
+	}
+	if got != want {
+		t.Errorf("duration = %d ms, want %d ms", got, want)
+	}
+}
+
+func TestM4ADurationMs_MissingFile(t *testing.T) {
+	_, err := m4aDurationMs("/nonexistent/file.m4a")
+	if err == nil {
+		t.Error("expected error for missing file, got nil")
+	}
+}
+
+//  makeTestFLAC / flacDurationMs
+
+// makeTestFLAC writes a minimal FLAC file with a STREAMINFO block only.
+func makeTestFLAC(t *testing.T, durationMs int64) string {
+	t.Helper()
+	const sampleRate = 44100
+	totalSamples := durationMs * int64(sampleRate) / 1000
+
+	// STREAMINFO is 34 bytes. Bit layout from byte 10:
+	//   20 bits sample rate | 3 bits channels-1 | 5 bits bps-1 | 36 bits total samples
+	info := make([]byte, 34)
+	// min/max block size (bytes 0-3): 4096
+	binary.BigEndian.PutUint16(info[0:2], 4096)
+	binary.BigEndian.PutUint16(info[2:4], 4096)
+	// min/max frame size (bytes 4-9): 0 = unknown
+	// Pack from byte 10:
+	//   sampleRate=44100 (0xAC44) in bits [0..19]
+	//   channels=1 (0) in bits [20..22]
+	//   bps=16 (15) in bits [23..27]
+	//   totalSamples in bits [28..63]
+	v := uint64(sampleRate)<<44 | uint64(0)<<41 | uint64(15)<<36 | uint64(totalSamples)
+	for i := 0; i < 8; i++ {
+		info[10+i] = byte(v >> (56 - 8*i))
+	}
+
+	// Block header: type=0 (STREAMINFO), last-metadata=1, length=34
+	hdr := []byte{0x80, 0x00, 0x00, 0x22}
+
+	buf := append([]byte("fLaC"), hdr...)
+	buf = append(buf, info...)
+
+	path := filepath.Join(t.TempDir(), "test.flac")
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		t.Fatalf("write test.flac: %v", err)
+	}
+	return path
+}
+
+func TestFlacDurationMs_Basic(t *testing.T) {
+	want := int64(120000) // 2 minutes
+	path := makeTestFLAC(t, want)
+	got, err := flacDurationMs(path)
+	if err != nil {
+		t.Fatalf("flacDurationMs: %v", err)
+	}
+	if got != want {
+		t.Errorf("duration = %d ms, want %d ms", got, want)
+	}
+}
+
+func TestFlacDurationMs_MissingFile(t *testing.T) {
+	_, err := flacDurationMs("/nonexistent/file.flac")
+	if err == nil {
+		t.Error("expected error for missing file, got nil")
+	}
+}
+
+//  makeTestOggVorbis / oggVorbisDurationMs
+
+// makeTestOggVorbis writes a minimal Ogg Vorbis file.
+func makeTestOggVorbis(t *testing.T, durationMs int64) string {
+	t.Helper()
+	const sampleRate = 44100
+	granule := durationMs * int64(sampleRate) / 1000
+
+	var buf []byte
+	writePage := func(headerType byte, gran int64, seq uint32, data []byte) {
+		var lace []byte
+		rem := len(data)
+		for rem >= 255 {
+			lace = append(lace, 255)
+			rem -= 255
+		}
+		lace = append(lace, byte(rem))
+		buf = append(buf, 'O', 'g', 'g', 'S', 0, headerType)
+		buf = binary.LittleEndian.AppendUint64(buf, uint64(gran))
+		buf = binary.LittleEndian.AppendUint32(buf, 1)
+		buf = binary.LittleEndian.AppendUint32(buf, seq)
+		buf = binary.LittleEndian.AppendUint32(buf, 0)
+		buf = append(buf, byte(len(lace)))
+		buf = append(buf, lace...)
+		buf = append(buf, data...)
+	}
+
+	// Vorbis identification header (30 bytes minimum).
+	ident := make([]byte, 30)
+	ident[0] = 0x01
+	copy(ident[1:7], "vorbis")
+	binary.LittleEndian.PutUint32(ident[11:15], uint32(sampleRate))
+	writePage(2, 0, 0, ident)
+
+	// Comment + setup pages (minimal).
+	comment := make([]byte, 16)
+	comment[0] = 0x03
+	copy(comment[1:7], "vorbis")
+	writePage(0, 0, 1, comment)
+
+	// EOS page with final granule.
+	writePage(4, granule, 2, []byte{0x00})
+
+	path := filepath.Join(t.TempDir(), "test.ogg")
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		t.Fatalf("write test.ogg: %v", err)
+	}
+	return path
+}
+
+func TestOggVorbisDurationMs_Basic(t *testing.T) {
+	want := int64(60000) // 1 minute
+	path := makeTestOggVorbis(t, want)
+	got, err := oggVorbisDurationMs(path)
+	if err != nil {
+		t.Fatalf("oggVorbisDurationMs: %v", err)
+	}
+	if got != want {
+		t.Errorf("duration = %d ms, want %d ms", got, want)
+	}
+}
+
+func TestOggVorbisDurationMs_MissingFile(t *testing.T) {
+	_, err := oggVorbisDurationMs("/nonexistent/file.ogg")
+	if err == nil {
+		t.Error("expected error for missing file, got nil")
+	}
+}
+
+//  makeTestWAV / wavDurationMs
+
+// makeTestWAV writes a minimal PCM WAV file with no audio data.
+func makeTestWAV(t *testing.T, durationMs int64) string {
+	t.Helper()
+	const sampleRate = 44100
+	const channels = 2
+	const bitsPerSample = 16
+	byteRate := int64(sampleRate * channels * bitsPerSample / 8)
+	dataSize := byteRate * durationMs / 1000
+
+	buf := make([]byte, 44+dataSize)
+	copy(buf[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(36+dataSize))
+	copy(buf[8:12], "WAVE")
+	copy(buf[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(buf[16:20], 16) // fmt chunk size
+	binary.LittleEndian.PutUint16(buf[20:22], 1)  // PCM
+	binary.LittleEndian.PutUint16(buf[22:24], channels)
+	binary.LittleEndian.PutUint32(buf[24:28], sampleRate)
+	binary.LittleEndian.PutUint32(buf[28:32], uint32(byteRate))
+	binary.LittleEndian.PutUint16(buf[32:34], channels*bitsPerSample/8) // block align
+	binary.LittleEndian.PutUint16(buf[34:36], bitsPerSample)
+	copy(buf[36:40], "data")
+	binary.LittleEndian.PutUint32(buf[40:44], uint32(dataSize))
+
+	path := filepath.Join(t.TempDir(), "test.wav")
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		t.Fatalf("write test.wav: %v", err)
+	}
+	return path
+}
+
+func TestWAVDurationMs_Basic(t *testing.T) {
+	want := int64(30000) // 30 seconds
+	path := makeTestWAV(t, want)
+	got, err := wavDurationMs(path)
+	if err != nil {
+		t.Fatalf("wavDurationMs: %v", err)
+	}
+	if got != want {
+		t.Errorf("duration = %d ms, want %d ms", got, want)
+	}
+}
+
+func TestWAVDurationMs_MissingFile(t *testing.T) {
+	_, err := wavDurationMs("/nonexistent/file.wav")
+	if err == nil {
+		t.Error("expected error for missing file, got nil")
+	}
+}
+
+//  audioDurationMs dispatch
+
+func TestAudioDurationMs_Dispatch(t *testing.T) {
+	cases := []struct {
+		ext  string
+		make func(*testing.T, int64) string
+	}{
+		{".opus", makeTestOpus},
+		{".mp3", makeTestMP3},
+		{".m4a", makeTestM4A},
+		{".flac", makeTestFLAC},
+		{".ogg", makeTestOggVorbis},
+		{".wav", makeTestWAV},
+	}
+	for _, tc := range cases {
+		t.Run(tc.ext, func(t *testing.T) {
+			want := int64(10000)
+			path := tc.make(t, want)
+			got, err := audioDurationMs(path)
+			if err != nil {
+				t.Fatalf("audioDurationMs(%s): %v", tc.ext, err)
+			}
+			if got < want-200 || got > want+200 {
+				t.Errorf("duration = %d ms, want ~%d ms", got, want)
+			}
+		})
+	}
+}
+
+func TestAudioDurationMs_UnsupportedExt(t *testing.T) {
+	_, err := audioDurationMs("file.aac")
+	if err == nil {
+		t.Error("expected error for unsupported extension, got nil")
+	}
+}
+
 //  SaveBookDurations / LoadBookDurations
 
 func TestSaveLoadBookDurations(t *testing.T) {
@@ -712,5 +1053,77 @@ chapters:
 	}
 	if books[0].Chapters[0].Duration != 75000 {
 		t.Errorf("duration = %d, want 75000 (from cache, no probe)", books[0].Chapters[0].Duration)
+	}
+}
+
+//  ServerCatalog
+
+func TestSaveLoadServerCatalog_Roundtrip(t *testing.T) {
+	s := newTestStore(t)
+	books := []Audiobook{
+		{Hash: "h1", Title: "Book One", Author: "Author A", Date: 2020, Duration: 3600000, Size: 100000, Genres: []string{"sci-fi"}},
+		{Hash: "h2", Title: "Book Two", Author: "Author B", Date: 2021, Duration: 7200000, Size: 200000},
+		{Hash: "h3", Title: "Book Three", Author: "Author C", Date: 2022, Duration: 1800000, Size: 50000, Description: "A great book"},
+	}
+	if err := s.SaveServerCatalog(books); err != nil {
+		t.Fatalf("SaveServerCatalog: %v", err)
+	}
+	got := s.LoadServerCatalog()
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3", len(got))
+	}
+	for i, want := range books {
+		g := got[i]
+		if g.Hash != want.Hash {
+			t.Errorf("[%d] Hash = %q, want %q", i, g.Hash, want.Hash)
+		}
+		if g.Title != want.Title {
+			t.Errorf("[%d] Title = %q, want %q", i, g.Title, want.Title)
+		}
+		if g.Author != want.Author {
+			t.Errorf("[%d] Author = %q, want %q", i, g.Author, want.Author)
+		}
+		if g.Duration != want.Duration {
+			t.Errorf("[%d] Duration = %d, want %d", i, g.Duration, want.Duration)
+		}
+		if g.State != DownloadRemote {
+			t.Errorf("[%d] State = %v, want DownloadRemote", i, g.State)
+		}
+		if len(g.Chapters) != 0 {
+			t.Errorf("[%d] Chapters = %v, want empty (local-only field)", i, g.Chapters)
+		}
+	}
+}
+
+func TestLoadServerCatalog_NilWhenAbsent(t *testing.T) {
+	s := newTestStore(t)
+	if got := s.LoadServerCatalog(); got != nil {
+		t.Errorf("expected nil, got %d books", len(got))
+	}
+}
+
+func TestSaveServerCatalog_WritesFile(t *testing.T) {
+	s := newTestStore(t)
+	books := []Audiobook{{Hash: "h1", Title: "Book"}}
+	if err := s.SaveServerCatalog(books); err != nil {
+		t.Fatalf("SaveServerCatalog: %v", err)
+	}
+	catalogPath := filepath.Join(s.dataDir, "server_catalog.json")
+	if _, err := os.Stat(catalogPath); err != nil {
+		t.Errorf("server_catalog.json not found: %v", err)
+	}
+	tmpPath := catalogPath + ".tmp"
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Errorf("tmp file should not exist after atomic write")
+	}
+}
+
+func TestSaveServerCatalog_EmptySlice(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SaveServerCatalog([]Audiobook{}); err != nil {
+		t.Fatalf("SaveServerCatalog: %v", err)
+	}
+	if got := s.LoadServerCatalog(); got != nil {
+		t.Errorf("expected nil for empty catalog, got %d books", len(got))
 	}
 }

@@ -34,6 +34,10 @@ func modeName(m Mode) string {
 		return "search"
 	case ModeSearching:
 		return "searching"
+	case ModeLibSearch:
+		return "libsearch"
+	case ModeLibSearching:
+		return "libsearching"
 	default:
 		return "unknown"
 	}

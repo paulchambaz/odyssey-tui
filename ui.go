@@ -350,12 +350,25 @@ func (ps *PlayerState) renderLibraryPanel(w, h int) string {
 }
 
 func (ps *PlayerState) buildLibList(inner, h int) []string {
-	books := ps.lib.Books
+	filtered := (ps.mode == ModeLibSearch || ps.mode == ModeLibSearching) && ps.libQuery != ""
+
+	total := len(ps.lib.Books)
+	if filtered {
+		total = len(ps.libMatches)
+	}
 
 	var lines []string
-	for i := ps.libOffset; i < len(books) && len(lines) < h; i++ {
-		b := books[i]
-		isSelected := i == ps.libSel
+	for i := ps.libOffset; i < total && len(lines) < h; i++ {
+		var b Audiobook
+		var isSelected bool
+		if filtered {
+			bookIdx := ps.libMatches[i]
+			b = ps.lib.Books[bookIdx]
+			isSelected = bookIdx == ps.libSel
+		} else {
+			b = ps.lib.Books[i]
+			isSelected = i == ps.libSel
+		}
 
 		var stateCol lipgloss.Color
 		switch b.State {
@@ -559,6 +572,21 @@ func (ps *PlayerState) buildInfoSection(w int) string {
 			col = colError
 		}
 		return padLine(lipgloss.NewStyle().Foreground(col).Render(" "+truncate(ps.statusMsg, w-1)), w)
+	}
+
+	if ps.mode == ModeLibSearch {
+		cursor := lipgloss.NewStyle().Foreground(colReady).Render("█")
+		query := truncate(ps.libQuery, w-3)
+		return padLine(" "+gray.Render("/ "+query)+cursor, w)
+	}
+
+	if ps.mode == ModeLibSearching {
+		counter := "[0/0] "
+		if len(ps.libMatches) > 0 {
+			counter = fmt.Sprintf("[%d/%d] ", ps.libMatchIdx+1, len(ps.libMatches))
+		}
+		query := truncate(ps.libQuery, w-3-len(counter))
+		return padLine(" "+accent.Render(counter)+gray.Render("/ "+query), w)
 	}
 
 	if ps.mode == ModeSearch {

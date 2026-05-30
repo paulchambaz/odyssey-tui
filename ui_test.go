@@ -432,6 +432,50 @@ func TestBuildLibList_InProgressShowsPercentage(t *testing.T) {
 	}
 }
 
+func TestBuildLibList_SearchActive_ShowsOnlyMatches(t *testing.T) {
+	b1 := makeBook("a", DownloadReady, nil, nil)
+	b1.Title = "Alpha Book"
+	b2 := makeBook("b", DownloadReady, nil, nil)
+	b2.Title = "Beta Book"
+	ps := makeLibState([]Audiobook{b1, b2})
+	ps.mode = ModeLibSearching
+	ps.libQuery = "beta"
+	ps.libMatches = []int{1}
+	lines := ps.buildLibList(40, 5)
+	if !strings.Contains(lines[0], "Beta Book") {
+		t.Errorf("line[0] should contain matched book, got: %q", lines[0])
+	}
+	if strings.Contains(lines[0], "Alpha Book") {
+		t.Errorf("line[0] should not contain non-matched book, got: %q", lines[0])
+	}
+	for i := 1; i < 5; i++ {
+		if strings.TrimSpace(lines[i]) != "" {
+			t.Errorf("line[%d] should be padding (no more matches), got: %q", i, lines[i])
+		}
+	}
+}
+
+func TestBuildLibList_SearchActive_EmptyQuery_ShowsAll(t *testing.T) {
+	b1 := makeBook("a", DownloadReady, nil, nil)
+	b1.Title = "Alpha Book"
+	b2 := makeBook("b", DownloadReady, nil, nil)
+	b2.Title = "Beta Book"
+	ps := makeLibState([]Audiobook{b1, b2})
+	ps.mode = ModeLibSearch
+	ps.libQuery = ""
+	ps.libMatches = nil
+	lines := ps.buildLibList(40, 5)
+	found := 0
+	for _, l := range lines {
+		if strings.Contains(l, "Alpha Book") || strings.Contains(l, "Beta Book") {
+			found++
+		}
+	}
+	if found < 2 {
+		t.Errorf("empty query should show all books, found only %d", found)
+	}
+}
+
 //  renderLibraryPanel
 
 func splitPanel(out string) []string {
